@@ -61,6 +61,86 @@ func rxTestRequest(t *testing.T, srv *httptest.Server, id, action, token string,
 	return resp
 }
 
+type rxFirstFlushRecorder struct {
+	*httptest.ResponseRecorder
+	cancel context.CancelFunc
+	first  int
+}
+
+func (w *rxFirstFlushRecorder) Flush() {
+	if w.first < 0 {
+		w.first = w.Body.Len()
+	}
+	w.ResponseRecorder.Flush()
+	w.cancel()
+}
+
+func TestRXServerSegmentFirstFlush(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		segment  int32
+		parallel int32
+		produced int
+		first    int
+	}{
+		{"ready_resume", 256, 0, 512, 256},
+		{"pending_resume", 256, 0, 384, 0},
+		{"ready_parallel", 256, 2, 512, 256},
+		{"pending_parallel", 256, 2, 384, 0},
+		{"legacy", 0, 0, 512, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Mode: "packet-up", Rx: &RXConfig{Enabled: true,
+				MaxResponseBytes: tc.segment, MaxConcurrentSegments: tc.parallel}}
+			h := &requestHandler{config: cfg, sessionMu: &sync.Mutex{}, ln: &Listener{config: cfg,
+				addConn: func(c stat.Connection) {
+					if _, err := c.Write([]byte(strings.Repeat("x", tc.produced))); err != nil {
+						t.Fatal(err)
+					}
+				}}}
+			t.Cleanup(h.closeRX)
+			request := func(action string, offset, generation uint64) *rxFirstFlushRecorder {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				r := httptest.NewRequest("GET", "https://localhost/flush", nil).WithContext(ctx)
+				r.Header.Set(rxVersionHeader, "1")
+				r.Header.Set(rxTokenHeader, strings.Repeat("ab", 32))
+				r.Header.Set(rxNonceHeader, "0011223344556677")
+				r.Header.Set(rxActionHeader, action)
+				r.Header.Set(rxOffsetHeader, strconv.FormatUint(offset, 10))
+				r.Header.Set(rxGenerationHeader, strconv.FormatUint(generation, 10))
+				if tc.segment != 0 {
+					r.Header.Set(rxSegmentHeader, strconv.Itoa(int(tc.segment)))
+				}
+				if tc.parallel != 0 {
+					r.Header.Set(rxParallelHeader, strconv.Itoa(int(tc.parallel)))
+					if action == "segment" {
+						r.Header.Set(rxSegmentEndHeader, "512")
+						r.Header.Set(rxAckHeader, "256")
+					}
+				}
+				w := &rxFirstFlushRecorder{ResponseRecorder: httptest.NewRecorder(), cancel: cancel, first: -1}
+				h.handleRX(w, r, "flush", "", nil)
+				if w.Code != http.StatusOK || w.Header().Get(rxNonceHeader) != "0011223344556677" {
+					t.Fatalf("invalid response: status=%d", w.Code)
+				}
+				return w
+			}
+			if w := request("open", 0, 1); w.first != 0 {
+				t.Fatalf("open delayed headers: first flush bytes=%d", w.first)
+			}
+			action, generation := "resume", uint64(2)
+			if tc.parallel != 0 {
+				action, generation = "segment", 1
+			}
+			w := request(action, 256, generation)
+			if w.first != tc.first {
+				t.Fatalf("first flush bytes=%d, want %d", w.first, tc.first)
+			}
+		})
+	}
+}
+
 func TestRXServerSegmentBounds(t *testing.T) {
 	h, srv := rxServerFixture(t, func(c stat.Connection) { go func() { c.Write([]byte(strings.Repeat("x", 512))) }() })
 	h.config.Rx.MaxResponseBytes, h.config.Rx.MaxSegments = 256, 1

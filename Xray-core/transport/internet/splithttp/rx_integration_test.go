@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	gotls "crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	stdnet "net"
@@ -461,21 +462,30 @@ func TestRXSegmentH2NoImplicitRetry(t *testing.T) {
 					return
 				}
 				fr := http2.NewFramer(server, server)
+				var streamID uint32
+				var settingsAck bool
 				for {
 					frame, err := fr.ReadFrame()
 					if err != nil {
 						serverDone <- err
 						return
 					}
-					if _, ok := frame.(*http2.WindowUpdateFrame); ok {
+					switch frame := frame.(type) {
+					case *http2.WindowUpdateFrame:
 						if err := fr.WriteSettings(); err != nil {
 							serverDone <- err
 							return
 						}
+					case *http2.SettingsFrame:
+						settingsAck = frame.IsAck()
+					case *http2.HeadersFrame:
+						streamID = frame.StreamID
 					}
-					if headers, ok := frame.(*http2.HeadersFrame); ok {
+					// Drain the SETTINGS ACK before writing the fault: net.Pipe has
+					// no buffer, so simultaneous writes would block both peers.
+					if settingsAck && streamID != 0 {
 						if refused {
-							err = fr.WriteRSTStream(headers.StreamID, http2.ErrCodeRefusedStream)
+							err = fr.WriteRSTStream(streamID, http2.ErrCodeRefusedStream)
 						} else {
 							err = fr.WriteGoAway(0, http2.ErrCodeNo, nil)
 						}
@@ -489,9 +499,18 @@ func TestRXSegmentH2NoImplicitRetry(t *testing.T) {
 			req, _ := http.NewRequestWithContext(ctx, "GET", "https://localhost/", nil)
 			transport := &rxOneShotTransport{pool: pool}
 			defer transport.CloseIdleConnections()
-			if resp, err := transport.RoundTrip(req); err == nil {
+			resp, err := transport.RoundTrip(req)
+			if err == nil {
 				resp.Body.Close()
 				t.Fatal("expected explicit H2 error")
+			}
+			if refused {
+				var streamErr http2.StreamError
+				if !errors.As(err, &streamErr) || streamErr.StreamID != 1 || streamErr.Code != http2.ErrCodeRefusedStream {
+					t.Fatalf("expected REFUSED_STREAM, got %v", err)
+				}
+			} else if !strings.Contains(err.Error(), "GOAWAY") {
+				t.Fatalf("expected GOAWAY, got %v", err)
 			}
 			if err := <-serverDone; err != nil {
 				t.Fatal(err)

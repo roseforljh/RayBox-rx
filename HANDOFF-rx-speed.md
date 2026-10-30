@@ -20,13 +20,13 @@
 - 受限样本100字节填充/1KiB串行段曾完整64KiB约21秒，2KiB样本失败。并发N4/N16完整64KiB分别41.286和48.395秒，主要有启动等待。
 - 后续协作样本p128a记录16MiB/85.024206秒，即0.197323MB/s、0.188182MiB/s。结果文件为 `full_file_complete=false`，不是完整1GiB。本次迁移没有独立复核源站hash、pcap、资源整套证据，不能称速度目标达成。
 - 某些样本出现约5个下行载荷包后静默、全握手迟到、目的地址间成功率差异。这些仅限原测点/入口/时段；固定包数阈值、具体TLS消息归属、限流所在位置等机制仍需区分观察和推测。
-- `TestRXSegmentH2NoImplicitRetry` 有已知间歇失败，根因未定，不因部分定向通过就声称全绿。验证记录见 `VALIDATION.md`。
+- `TestRXSegmentH2NoImplicitRetry` 的已知间歇失败已由协作会话修复测试端握手顺序：无缓冲net.Pipe需先读完SETTINGS ACK与HEADERS再注入故障，避免双方同步写互堵。保留1秒截止和零重拨断言，新增真实H2错误断言；定向race重复20次通过，未重跑全包。验证记录见 `VALIDATION.md`。
 
 ## 研究优先级
 
-A. 先对现有候选IP做有界普通XHTTP分类，排除未受限IP混入。不能只用失败一次或HTTP状态认定受限；压缩、底层连接数量和实际字节必须核对。原A分类草稿尚未执行，没有分类新结论。
+A. 先对现有候选IP做有界普通XHTTP分类，排除未受限IP混入。不能只用失败一次或HTTP状态认定受限；压缩、底层连接数量和实际字节必须核对。新工具 `Xray-core/scripts/xhttp-classify.py` 默认离线准备，使用与计量边界见 `Xray-core/docs/xhttp-classify.md`。用户授权的首轮已执行：34个既有IP，12个完整1MiB/hash一致（11个≥1MB/s），13个TCP建立但0应用字节，9个未观察SYN-ACK。旧混池结果不能证明全受限提速；本轮门控/单次样本不等于直拨或永久分类，详见 `Xray-core/docs/xhttp-classify-field-20261030.md`。
 
-B. 增加单连接有效数据：试验合适段长、H1与H2的开销差异、响应头与首数据发送方式。不得删除认证/偏移确认或破坏首上传依赖的立即Flush来凑成功。1344字节是候选值，不是已证明通用阈值。
+B. 增加单连接有效数据：本地已让整段数据已就绪的RX续段省去空响应头Flush，首open、未分段RX与未就绪续段仍立即Flush。定向首刷新/H1-H2分段上传/并发TLS race通过1.461秒；已部署独立实验，两档均失败，无现场收益证据，详见下方最新直拨结果。CF终止客户端TLS，源站Flush边界不保证保留到客户端，不能据此宣称减少一个线上包。继续评估合适段长、H1与H2开销和首数据发送方式；不得删除认证/偏移确认或破坏首上传依赖。1344字节是候选值，不是通用阈值。
 
 C. 使用更多已授权、可服务同一Host的受限地址，结合票据复用和成功率分组。大网段扫描不属于既有授权，不自动执行。
 
@@ -43,6 +43,51 @@ G. 协议与真实线路验收后才做App参数接入、补丁导出及AAR构�
 原始认证配置、凭据、SSH known_hosts、抓包、实验产物、工具链和两个独立Git仓库历史均留在仓库之外的私有归档。具体本机位置和哈希核对文件见忽略的 `artifacts/migration/LOCAL-HANDOFF.md`，不得提交Git。
 
 旧原始HANDOFF及脚本可能仍写旧绝对路径；不可照搬执行。DPAPI凭据依赖原Windows用户。旧两个Git仓库保留完整工作树及.git，补丁导出需按新脚本显式传入它们的实际归档路径，不能将组合子目录当成原仓库。
+
+## 最新直拨结果（2026-10-30授权窗口）
+
+SSH恢复后已完成13个失败候选H2/H1各一次64KiB：1344字节段/N8/预热0，H2为0字节、20TCP但TLS ready0；H1完成44次TLS握手（43恢复）却仅交付1139应用字节，32次故障预算耗尽。两档均失败且全清理，生产未变。协作包级复核发现H2全部20条连接已有后段TCP载荷，但前1448字节未观察到、累计ACK保持0；H1部分连接首218字节之后同样存在TCP序列缺口。后段到达抓包点与socket读0或218字节相容，不能据此确定缺失位置或把type23称为HTTP正文。省去空Flush尚无现场收益证据，CF会终止并重建TLS，不能从源站Flush推定客户端TLS记录边界，也不能因本地race通过就宣称提速。已本地构建原空Flush独立对照产物，原始证据在忽略的 `artifacts/rx-failed-only-20261030/`，脱敏结果见 `Xray-core/docs/xhttp-rx-failedonly-field-20261030.md`；协作离线ACK/SACK及SYN统计见忽略的 `artifacts/rx-pcap-review-20261030/`。原空Flush基线SHA-256为 `9c66cb7e7d58966fdc382226d0cbfb365bf9fcf73691f2da465f4d8cef60eff5`，同段长对照尚未获新窗口预算授权，未执行。
+
+## 最新进度与结论（2026-10-30，MSS/RX批量轮次）
+
+脱敏现场报告：`Xray-core/docs/xhttp-rx-mss-field-20261030.md`。以下为接手要点。
+
+### 已确认的受限机制（13个受限IP，抓包证据）
+
+1. **满长包黑洞**：IP总长1500的下行包从不到达，≤1480能到。客户端 `sockopt.tcpMaxSeg` 1360或1440即可修好握手（以前H2 0字节、H1只1139字节的根因）。1440最好。
+2. **单连接下行包数限额**：每条TCP约第9~10个下行包后冻结，SYN-ACK、纯ACK、FIN都计入，上行不计，不按时间。ClientHello拆TCP段或拆TLS记录都无效。单连接有效正文约4KB；4.5KB偶尔可行，5KB以上大量撞线。
+3. **整体下行天花板**：多连接合计下行L3约0.9~1.1MB/s（约1650包/秒）平顶。6个、7个、13个IP平顶相同，按客户端整体算，加IP无效；该值随时段波动，曾跌到约0.55MB/s。
+4. 新建连接速率未见限制。
+
+### 当前最好配置与结果
+
+RX + H1（每段一条新连接，`DisableKeepAlives`）+ TLS会话恢复，`maxResponseBytes` 4096，`maxConcurrentSegments` 64，`maxReplayBytes` 16MiB，客户端 `sockopt.tcpMaxSeg` 1440，13个受限IP作 `spreadAddresses`。完整8MiB、SHA-256一致，最好 **0.509MB/s（0.485MiB/s）**，常见0.4~0.48MB/s；约120~140唯一SYN/秒，客户端CPU约1.5秒/8MiB，RSS约46MB。
+
+### 已排除或失败
+
+- 128及以上并发：超出整体天花板后拥塞丢包，段成功率降到约25~35%，终身重试预算耗尽。
+- 回放窗口小于下载量（1MiB窗口下8MiB）：队头冻结段卡死产出，必须开大 `maxReplayBytes`。
+- 关闭CF zone NEL：每段少约350字节，但"会话票据+响应头"仍占两个包，包数不变；A/B为关0.356、开0.476MB/s，已恢复开启。
+- 4KB段线上约6.3KB、约10个下行包，按整体天花板推算有效上限约0.65MB/s。**在"受限CF IP + TLS + 每段一条TCP"框架内达不到1MB/s。**
+
+### 未验证方向（均需用户决定，代价已向用户说明）
+
+- HTTP/3（UDP）经CF：公开报告称对受限IP的UDP尝试可能触发约10分钟整IP封锁。
+- CF明文HTTP端口（不走外层TLS），用VLESS自带加密保护内容：公开资料称冻结针对TLS，未验证；与"真实TLS验证不能关闭"原则冲突。
+- 以约0.5MB/s跑一次完整1GiB，只验证完整性：约35~40分钟、约30万次连接，需放宽1800秒截止，尚未授权。
+- 减少单段非正文下行包，例如上游Finished与请求合包、减少CF纯ACK：受CF与Go TLS行为限制，未找到可行实现。
+
+### 工具与证据位置（均在被忽略的 `artifacts/`）
+
+- `xhttp-classify.py` 已新增可选 `tcp_max_seg` 及 `hello_split`/`hello_split_bytes`（自检覆盖）。
+- 批量现场脚本：`artifacts/rxbatch-field-20261030/field.py`（按 `modes.json` 跑档位，流式hash、增量SYN计数与上限、资源采样、清理回读），`gen.py <轮号> '<档位json>'` 生成上传/准备/逐档运行/停止/收集的jsonl任务；`summ.py` 汇总。档位格式 `[段, 并发, SYN上限, MSS, 回放字节, 可选IP列表]`。
+- 离线分析：`artifacts/mss-review/`（`budget.py` 冻结点包数、`rate.py` 整体/单IP速率、`timeline.py` 连接结局、`conns.py`、`synrate.py`、`flow.py`）。
+- 各轮原始证据：`mss-field-`、`split-field-`、`rxmss-field-`、`rxmss2-field-`、`rxmss3-field-`、`rxbatch-field-20261030/r01~r05`。远端运行方式与凭据位置见 `artifacts/migration/LOCAL-HANDOFF.md`。
+- 俄罗斯测点SSH偶发banner EOF，任务未执行时可直接重试。两端 `/opt/raybox-*-20261030-*` 为已停止的实验目录，可清理但需先确认无运行unit。
+
+### 授权状态
+
+本会话批量授权（13个既有受限IP、每轮≤4档、≤6轮、合计≤100000 SYN）已用5轮，约3万次SYN，**属于本会话，新会话需重新向用户确认**。
 
 ## 执行边界
 

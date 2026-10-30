@@ -510,11 +510,15 @@ func (h *requestHandler) handleRX(w http.ResponseWriter, r *http.Request, id, se
 	logStage("write-header")
 	w.WriteHeader(http.StatusOK)
 	logStage("write-header-returned")
-	if err := controller.Flush(); err != nil {
-		logStage("header-flush-failed")
-		return nil, true
+	// Open must unblock the first upload; only ready continuation segments can
+	// send their headers with the first data write instead of an empty flush.
+	if start || s.segment == 0 || end < segmentEnd {
+		if err := controller.Flush(); err != nil {
+			logStage("header-flush-failed")
+			return nil, true
+		}
+		logStage("header-flushed")
 	}
-	logStage("header-flushed")
 	setDeadline(time.Time{})
 	firstData := true
 	logStage("waiting-first-data")
