@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -336,6 +337,65 @@ func rxHedgeDial(dial func(context.Context) (net.Conn, error)) func(context.Cont
 	}
 }
 
+// rxSpread chooses the TCP destination of each new RX connection. Field data
+// showed anycast IPs of one host ranging from dead to frozen-after-handshake to
+// healthy, so every address keeps a success EWMA fed by dials and segment results.
+// ponytail: power-of-two-choices on a global mutex; per-address locks or a
+// heap only if thousands of addresses or dials per second need it.
+type rxSpread struct {
+	mu     sync.Mutex
+	addrs  []string
+	scores []float64
+}
+
+func newRXSpread(addrs []string) *rxSpread {
+	s := &rxSpread{addrs: addrs, scores: make([]float64, len(addrs))}
+	for i := range s.scores {
+		s.scores[i] = 1
+	}
+	return s
+}
+
+// pick samples two addresses and keeps the healthier one, so poor addresses
+// fade out but are still retried occasionally when the path changes.
+func (s *rxSpread) pick() int {
+	a, b := rand.IntN(len(s.addrs)), rand.IntN(len(s.addrs))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.scores[b] > s.scores[a] {
+		return b
+	}
+	return a
+}
+
+func (s *rxSpread) report(i int, ok bool) {
+	v := 0.0
+	if ok {
+		v = 1
+	}
+	s.mu.Lock()
+	s.scores[i] = 0.9*s.scores[i] + 0.1*v
+	s.mu.Unlock()
+}
+
+// rxReportConn records whether a connection delivered its segment; only the
+// first report per TCP counts.
+func rxReportConn(conn net.Conn, ok bool) {
+	for {
+		if c, ok2 := conn.(*rxSocket); ok2 {
+			if c.spread != nil && c.reported.CompareAndSwap(false, true) {
+				c.spread.report(c.spreadIndex, ok)
+			}
+			return
+		}
+		if c, ok2 := conn.(interface{ NetConn() net.Conn }); ok2 {
+			conn = c.NetConn()
+			continue
+		}
+		return
+	}
+}
+
 func rxCloseConn(conn net.Conn) {
 	if c, ok := conn.(interface{ SuppressCloseNotify() }); ok {
 		c.SuppressCloseNotify()
@@ -355,6 +415,10 @@ type rxSocket struct {
 	read    atomic.Uint64
 	written atomic.Uint64
 	once    sync.Once
+
+	spread      *rxSpread
+	spreadIndex int
+	reported    atomic.Bool
 }
 
 func (c *rxSocket) Read(p []byte) (int, error) {

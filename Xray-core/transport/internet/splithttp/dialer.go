@@ -115,19 +115,25 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 
 	transportConfig := streamSettings.ProtocolSettings.(*Config)
 
-	var spread []string
-	var spreadNext atomic.Uint64
-	if rx := transportConfig.GetRx(); rx.GetEnabled() && rx.GetMaxResponseBytes() != 0 {
-		spread = rx.GetSpreadAddresses()
+	var spread *rxSpread
+	if rx := transportConfig.GetRx(); rx.GetEnabled() && rx.GetMaxResponseBytes() != 0 && len(rx.GetSpreadAddresses()) != 0 {
+		spread = newRXSpread(rx.GetSpreadAddresses())
 	}
 	dialContext := func(ctxInner context.Context) (net.Conn, error) {
 		started := time.Now()
 		var conn net.Conn
 		var err error
-		target := dest
-		if len(spread) != 0 {
-			// TLS keeps the configured server name; only the TCP destination rotates.
-			target.Address = net.ParseAddress(spread[(spreadNext.Add(1)-1)%uint64(len(spread))])
+		target, spreadIndex := dest, -1
+		if spread != nil {
+			// TLS keeps the configured server name; only the TCP destination changes.
+			spreadIndex = spread.pick()
+			target.Address = net.ParseAddress(spread.addrs[spreadIndex])
+		}
+		// A dial abandoned because another hedge won early says nothing about this address.
+		failed := func() {
+			if spreadIndex >= 0 && (ctxInner.Err() == nil || time.Since(started) >= rxHedgeDelay) {
+				spread.report(spreadIndex, false)
+			}
 		}
 		if streamSettings.FinalMask != nil {
 			conn, err = streamSettings.FinalMask.DialTCP(ctxInner, target)
@@ -135,12 +141,13 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 			conn, err = internet.DialSystem(ctxInner, target, streamSettings.SocketSettings)
 		}
 		if err != nil {
+			failed()
 			return nil, err
 		}
 
 		var socket *rxSocket
 		if transportConfig.GetRx().GetEnabled() && transportConfig.GetRx().GetMaxResponseBytes() != 0 {
-			socket = &rxSocket{Conn: conn, ctx: ctxInner, id: rxConnectionID.Add(1), started: started}
+			socket = &rxSocket{Conn: conn, ctx: ctxInner, id: rxConnectionID.Add(1), started: started, spread: spread, spreadIndex: spreadIndex}
 			conn = socket
 			errors.LogInfo(ctxInner, "Xray-RX: TCP connected, id ", socket.id, ", dial_ms ", time.Since(started).Milliseconds(), ", finalmask ", streamSettings.FinalMask != nil)
 		}
@@ -162,6 +169,7 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 			if fingerprint != nil || transportConfig.GetRx().GetEnabled() {
 				handshakeStarted := time.Now()
 				if err := conn.(tls.Interface).HandshakeContext(ctxInner); err != nil {
+					failed()
 					conn.Close()
 					return nil, err
 				}

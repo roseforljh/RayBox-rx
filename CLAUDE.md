@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 当前研究交接
+
+继续受限入口研究前完整阅读 `HANDOFF-rx-speed.md`。目标是实际1至3MB/s及完整1GiB字节/hash一致；旧实验工作区已迁入仓库外私有归档，本机位置见被忽略的 `artifacts/migration/LOCAL-HANDOFF.md`。不得在旧路径重新启动任务，也不得将归档中的凭据或原始现场日志提交Git。
+
 ## 项目与布局
 
 项目名称为 **RayBox-rx**，根目录为组合源码Git仓库。`sing-box/` 和 `Xray-core/` 是普通源码目录，保留各自上游Go模块路径。Go命令从对应模块执行，Git命令从仓库根目录执行。

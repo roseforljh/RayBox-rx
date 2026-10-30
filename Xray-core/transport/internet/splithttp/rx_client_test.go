@@ -632,3 +632,24 @@ func TestRXSpreadAddressesNormalize(t *testing.T) {
 		t.Fatal("spread without segments accepted")
 	}
 }
+
+func TestRXSpreadPrefersHealthyAddress(t *testing.T) {
+	s := newRXSpread([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"})
+	for range 50 {
+		s.report(0, false)
+		s.report(1, false)
+	}
+	picks := [3]int{}
+	for range 3000 {
+		picks[s.pick()]++
+	}
+	// A dead address is only chosen when both samples hit dead ones (about 4/9),
+	// so the healthy one must dominate but the others are still probed.
+	if picks[2] < 1500 || picks[0] == 0 || picks[1] == 0 {
+		t.Fatalf("picks %v", picks)
+	}
+	s.report(2, true)
+	if s.scores[2] != 1 {
+		t.Fatalf("score %v", s.scores[2])
+	}
+}

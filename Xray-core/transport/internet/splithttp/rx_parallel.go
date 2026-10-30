@@ -232,6 +232,12 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 			openTimer.Stop()
 		}
 		if body != nil {
+			r.mu.Lock()
+			delivered, shutdown := j.complete, p.closed || r.terminal != nil
+			r.mu.Unlock()
+			if delivered || !shutdown {
+				body.report(delivered)
+			}
 			body.Close()
 		}
 		cancel()

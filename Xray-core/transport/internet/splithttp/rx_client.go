@@ -111,6 +111,16 @@ func (b *rxHTTPBody) gotConn(info httptrace.GotConnInfo) {
 	b.conn = info.Conn
 }
 
+// report feeds the outcome of this request back to the destination selector.
+func (b *rxHTTPBody) report(ok bool) {
+	b.mu.Lock()
+	conn := b.conn
+	b.mu.Unlock()
+	if conn != nil {
+		rxReportConn(conn, ok)
+	}
+}
+
 func (b *rxHTTPBody) Close() error {
 	b.once.Do(func() {
 		b.cancel()
@@ -305,6 +315,7 @@ func (r *rxDownlink) request(ctx context.Context, action string, offset, generat
 		<-timeoutDone
 	}
 	if err != nil {
+		body.report(false)
 		body.Close()
 		return rxResponse{}, err
 	}
