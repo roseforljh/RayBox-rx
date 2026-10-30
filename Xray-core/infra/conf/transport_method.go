@@ -299,6 +299,7 @@ type SplitHTTPConfig struct {
 
 type RXConfig struct {
 	Enabled               bool     `json:"enabled"`
+	AuthKey               string   `json:"authKey"`
 	StallDetect           bool     `json:"stallDetect"`
 	MaxReplayBytes        int32    `json:"maxReplayBytes"`
 	MaxSessions           int32    `json:"maxSessions"`
@@ -535,7 +536,7 @@ func (c *SplitHTTPConfig) Build() (proto.Message, error) {
 	}
 	if r := c.RX; r != nil {
 		config.Rx = &splithttp.RXConfig{
-			Enabled: r.Enabled, StallDetect: r.StallDetect,
+			Enabled: r.Enabled, StallDetect: r.StallDetect, AuthKey: r.AuthKey,
 			MaxReplayBytes: r.MaxReplayBytes, MaxSessions: r.MaxSessions,
 			ProbeIntervalMs: r.ProbeIntervalMs, StallTimeoutMs: r.StallTimeoutMs,
 			RequestTimeoutMs: r.RequestTimeoutMs, SessionTtlSecs: r.SessionTtlSecs,

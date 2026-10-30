@@ -176,8 +176,11 @@ type RXConfig struct {
 	MaxSegments           int32                  `protobuf:"varint,13,opt,name=maxSegments,proto3" json:"maxSegments,omitempty"`
 	MaxConcurrentSegments int32                  `protobuf:"varint,14,opt,name=maxConcurrentSegments,proto3" json:"maxConcurrentSegments,omitempty"`
 	SpreadAddresses       []string               `protobuf:"bytes,15,rep,name=spreadAddresses,proto3" json:"spreadAddresses,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Base64url 32-byte PSK for RX v2 control authentication/encryption.
+	// Provision out of band. Never transmitted. Both peers must configure it.
+	AuthKey       string `protobuf:"bytes,16,opt,name=authKey,proto3" json:"authKey,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RXConfig) Reset() {
@@ -313,6 +316,13 @@ func (x *RXConfig) GetSpreadAddresses() []string {
 		return x.SpreadAddresses
 	}
 	return nil
+}
+
+func (x *RXConfig) GetAuthKey() string {
+	if x != nil {
+		return x.AuthKey
+	}
+	return ""
 }
 
 type Config struct {
@@ -606,7 +616,7 @@ const file_transport_internet_splithttp_config_proto_rawDesc = "" +
 	"\x0ecMaxReuseTimes\x18\x03 \x01(\v2..xray.transport.internet.splithttp.RangeConfigR\x0ecMaxReuseTimes\x12Z\n" +
 	"\x10hMaxRequestTimes\x18\x04 \x01(\v2..xray.transport.internet.splithttp.RangeConfigR\x10hMaxRequestTimes\x12Z\n" +
 	"\x10hMaxReusableSecs\x18\x05 \x01(\v2..xray.transport.internet.splithttp.RangeConfigR\x10hMaxReusableSecs\x12*\n" +
-	"\x10hKeepAlivePeriod\x18\x06 \x01(\x03R\x10hKeepAlivePeriod\"\xd0\x04\n" +
+	"\x10hKeepAlivePeriod\x18\x06 \x01(\x03R\x10hKeepAlivePeriod\"\xea\x04\n" +
 	"\bRXConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12 \n" +
 	"\vstallDetect\x18\x02 \x01(\bR\vstallDetect\x12&\n" +
@@ -623,7 +633,8 @@ const file_transport_internet_splithttp_config_proto_rawDesc = "" +
 	"\vpreconnects\x18\f \x01(\x05R\vpreconnects\x12 \n" +
 	"\vmaxSegments\x18\r \x01(\x05R\vmaxSegments\x124\n" +
 	"\x15maxConcurrentSegments\x18\x0e \x01(\x05R\x15maxConcurrentSegments\x12(\n" +
-	"\x0fspreadAddresses\x18\x0f \x03(\tR\x0fspreadAddresses\"\x89\r\n" +
+	"\x0fspreadAddresses\x18\x0f \x03(\tR\x0fspreadAddresses\x12\x18\n" +
+	"\aauthKey\x18\x10 \x01(\tR\aauthKey\"\x89\r\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x12\n" +

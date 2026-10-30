@@ -39,6 +39,9 @@ message RXConfig {
   int32 maxSegments = 13;
   int32 maxConcurrentSegments = 14;
   repeated string spreadAddresses = 15;
+  // Base64url 32-byte PSK for RX v2 control authentication/encryption.
+  // Provision out of band. Never transmitted. Both peers must configure it.
+  string authKey = 16;
 }
 
 message Config {

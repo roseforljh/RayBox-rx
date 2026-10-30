@@ -48,6 +48,7 @@ type rxDownlink struct {
 	url                   string
 	sessionID             string
 	token                 string
+	auth                  *rxAuthCodec
 	factory               func() *http.Client
 	pool                  *rxPreconnect
 	segment               uint64 // immutable after open negotiation
@@ -102,6 +103,9 @@ type rxHTTPBody struct {
 }
 
 func (b *rxHTTPBody) gotConn(info httptrace.GotConnInfo) {
+	if c, ok := info.Conn.(interface{ SuppressCloseNotify() }); ok {
+		c.SuppressCloseNotify()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
@@ -166,6 +170,10 @@ func rxRandomHex(size int) (string, error) {
 }
 
 func newRXDownlink(ctx context.Context, config *Config, opts *RXConfig, url, sessionID string, factory func() *http.Client, pools ...*rxPreconnect) (*rxDownlink, error) {
+	auth, err := newRXClientAuth(opts.AuthKey, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	token, err := rxRandomHex(32)
 	if err != nil {
 		return nil, err
@@ -173,7 +181,7 @@ func newRXDownlink(ctx context.Context, config *Config, opts *RXConfig, url, ses
 	ctx, cancel := context.WithCancel(ctx)
 	r := &rxDownlink{
 		ctx: ctx, cancel: cancel, config: config, opts: opts, url: url, sessionID: sessionID,
-		token: token, factory: factory, generation: 1, ackWake: make(chan struct{}, 1), lastProgress: time.Now(),
+		token: token, auth: auth, factory: factory, generation: 1, ackWake: make(chan struct{}, 1), lastProgress: time.Now(),
 	}
 	if len(pools) != 0 {
 		r.pool = pools[0]
@@ -304,6 +312,14 @@ func (r *rxDownlink) request(ctx context.Context, action string, offset, generat
 	}
 	req.Header.Set("Cache-Control", "no-store")
 	req.Header.Set("Accept-Encoding", "identity")
+	var authCounter uint64
+	if r.auth != nil {
+		authCounter, err = r.auth.sealRequest(req, r.sessionID, "")
+		if err != nil {
+			body.Close()
+			return rxResponse{}, rxFatal("Xray-RX request authentication failed")
+		}
+	}
 	// A response-header deadline must not become the lifetime of a long body.
 	timeoutDone := make(chan struct{})
 	timer = time.AfterFunc(time.Duration(r.opts.RequestTimeoutMs)*time.Millisecond, func() {
@@ -320,6 +336,12 @@ func (r *rxDownlink) request(ctx context.Context, action string, offset, generat
 		return rxResponse{}, err
 	}
 	body.ReadCloser = resp.Body
+	if r.auth != nil {
+		if err := r.auth.openResponse(resp, req.Method, req.URL.EscapedPath(), r.sessionID, "", authCounter); err != nil {
+			body.Close()
+			return rxResponse{}, rxFatal("Xray-RX response authentication failed (HTTP %d): %v", resp.StatusCode, err)
+		}
+	}
 	if reqCtx.Err() != nil {
 		body.Close()
 		return rxResponse{}, reqCtx.Err()
@@ -330,6 +352,13 @@ func (r *rxDownlink) request(ctx context.Context, action string, offset, generat
 			return rxResponse{}, fmt.Errorf("Xray-RX temporary HTTP status %d", resp.StatusCode)
 		}
 		return rxResponse{}, rxFatal("Xray-RX refused HTTP status %d", resp.StatusCode)
+	}
+	if r.auth != nil && action == "open" {
+		if !validRXHex(resp.Header.Get(rxTokenHeader), 32) {
+			body.Close()
+			return rxResponse{}, rxFatal("Xray-RX missing authenticated server capability")
+		}
+		r.token = resp.Header.Get(rxTokenHeader)
 	}
 	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
 		body.Close()
@@ -528,11 +557,23 @@ func (r *rxDownlink) postPacketAttempt(ctx context.Context, template *http.Reque
 	req.Header.Set(rxActionHeader, "upload")
 	req.Header.Set("Cache-Control", "no-store")
 	req.Header.Set("Accept-Encoding", "identity")
+	var authCounter uint64
+	if r.auth != nil {
+		authCounter, err = r.auth.sealRequest(req, r.sessionID, seq)
+		if err != nil {
+			return rxFatal("Xray-RX upload authentication failed")
+		}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	body.ReadCloser = resp.Body
+	if r.auth != nil {
+		if err := r.auth.openResponse(resp, req.Method, req.URL.EscapedPath(), r.sessionID, seq, authCounter); err != nil {
+			return rxFatal("Xray-RX upload response authentication failed (HTTP %d): %v", resp.StatusCode, err)
+		}
+	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 		return fmt.Errorf("Xray-RX temporary upload HTTP status %d", resp.StatusCode)
 	}

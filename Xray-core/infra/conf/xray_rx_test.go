@@ -1,6 +1,8 @@
 package conf
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 
@@ -34,6 +36,33 @@ func TestXrayRXJSONAndProtobuf(t *testing.T) {
 	}
 	if roundtrip.UplinkHTTPMethod != "GET" || roundtrip.UplinkDataPlacement != "header" || roundtrip.UplinkDataKey != "data" {
 		t.Fatal("existing GET Header configuration changed")
+	}
+}
+
+func TestXrayRXAuthKeyRoundtrip(t *testing.T) {
+	key := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x73}, 32))
+	c := SplitHTTPConfig{Mode: "packet-up", RX: &RXConfig{Enabled: true, AuthKey: key}}
+	p, err := c.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := proto.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := new(splithttp.Config)
+	if err := proto.Unmarshal(wire, decoded); err != nil {
+		t.Fatal(err)
+	}
+	n, err := decoded.NormalizeRX()
+	if err != nil || n.AuthKey != key {
+		t.Fatal("RX auth key lost in config conversion")
+	}
+	for _, value := range []string{"password", key + "=", key[:len(key)-1]} {
+		c.RX.AuthKey = value
+		if _, err := c.Build(); err == nil {
+			t.Fatal("invalid auth key accepted")
+		}
 	}
 }
 

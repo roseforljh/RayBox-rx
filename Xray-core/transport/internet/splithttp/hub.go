@@ -42,6 +42,9 @@ type requestHandler struct {
 	sessions       sync.Map
 	rxSessions     map[string]*rxSession
 	rxClosed       bool
+	rxAuthOnce     sync.Once
+	rxAuth         *rxAuthServer
+	rxAuthErr      error
 	localAddr      net.Addr
 	socketSettings *internet.SocketConfig
 }
@@ -130,7 +133,9 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		}
 	}
 
-	h.config.ApplyXPaddingToResponse(writer, config)
+	if !(h.config.GetRx().GetEnabled() && request.Header.Get(rxVersionHeader) != "") {
+		h.config.ApplyXPaddingToResponse(writer, config)
+	}
 
 	if request.Method == "OPTIONS" {
 		writer.WriteHeader(http.StatusOK)
@@ -163,6 +168,11 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		return
 	}
 
+	var authenticated bool
+	writer, request, authenticated = h.authenticateRX(writer, request, sessionId, seqStr)
+	if !authenticated {
+		return
+	}
 	var remoteAddr net.Addr
 	var err error
 	remoteAddr, err = net.ResolveTCPAddr("tcp", request.RemoteAddr)
@@ -335,6 +345,10 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			writer.WriteHeader(http.StatusRequestEntityTooLarge)
 			return
 		}
+		if h.config.GetRx().GetEnabled() && h.config.GetRx().GetAuthKey() != "" && !rxVerifyPayload(request.Header.Get(rxPayloadHashHeader), payload) {
+			writer.WriteHeader(http.StatusForbidden)
+			return
+		}
 
 		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
@@ -463,8 +477,12 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 		addConn: addConn,
 	}
 	l.config = streamSettings.ProtocolSettings.(*Config)
-	if _, err := l.config.normalizedRX(); err != nil {
+	if rxOptions, err := l.config.normalizedRX(); err != nil {
 		return nil, err
+	} else if rxOptions != nil && rxOptions.AuthKey == "" && port != 0 &&
+		tls.ConfigFromStreamSettings(streamSettings) == nil && reality.ConfigFromStreamSettings(streamSettings) == nil &&
+		(!address.Family().IsIP() || !address.IP().IsLoopback()) {
+		return nil, errors.New("Xray-RX public HTTP listener requires rx.authKey")
 	}
 	if l.config != nil {
 		if streamSettings.SocketSettings == nil {

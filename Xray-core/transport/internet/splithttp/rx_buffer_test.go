@@ -108,3 +108,29 @@ func TestRXBufferReadCancellation(t *testing.T) {
 		t.Fatal("read stuck")
 	}
 }
+
+func TestRXBufferReadyRangeWrapAndOwnership(t *testing.T) {
+	b := newRXBuffer(8)
+	defer b.abort()
+	b.Write([]byte("abcdefgh"))
+	b.state(4, true)
+	b.Write([]byte("ijkl"))
+	p, err := b.readReady(4, 12)
+	if err != nil || string(p) != "efghijkl" {
+		t.Fatalf("wrapped ready range: %q %v", p, err)
+	}
+	b.state(12, true)
+	b.Write([]byte("mnopqrst"))
+	if string(p) != "efghijkl" {
+		t.Fatal("ready range aliases replay storage")
+	}
+	for _, offsets := range [][2]uint64{{4, 12}, {12, 21}, {13, 12}} {
+		if _, err := b.readReady(offsets[0], offsets[1]); !errors.Is(err, errRXOffset) {
+			t.Fatalf("invalid ready range %v: %v", offsets, err)
+		}
+	}
+	b.abort()
+	if _, err := b.readReady(12, 12); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatal("aborted ready range", err)
+	}
+}

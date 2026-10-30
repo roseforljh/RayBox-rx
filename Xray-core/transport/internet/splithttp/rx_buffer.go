@@ -110,6 +110,24 @@ func (b *rxBuffer) read(ctx context.Context, offset uint64) ([]byte, error) {
 	}
 }
 
+// readReady copies an already produced segment, including a ring wrap, under
+// one lock. The caller bounds end by the negotiated response size.
+func (b *rxBuffer) readReady(offset, end uint64) ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.aborted {
+		return nil, io.ErrClosedPipe
+	}
+	if offset < b.base || offset > end || end > b.end {
+		return nil, errRXOffset
+	}
+	p := make([]byte, int(end-offset))
+	pos := int(offset % uint64(len(b.data)))
+	n := copy(p, b.data[pos:])
+	copy(p[n:], b.data[:len(p)-n])
+	return p, nil
+}
+
 // Close preserves the final bytes until their ACK or session expiry.
 func (b *rxBuffer) Close() error {
 	b.mu.Lock()

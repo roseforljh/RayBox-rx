@@ -508,6 +508,10 @@ func (h *requestHandler) handleRX(w http.ResponseWriter, r *http.Request, id, se
 		h.ln.addConn(stat.Connection(conn))
 	}
 	logStage("write-header")
+	readySegment := !start && s.segment != 0 && end >= segmentEnd
+	if readySegment {
+		w.Header().Set("Content-Length", strconv.FormatUint(segmentEnd-offset, 10))
+	}
 	w.WriteHeader(http.StatusOK)
 	logStage("write-header-returned")
 	// Open must unblock the first upload; only ready continuation segments can
@@ -529,7 +533,15 @@ func (h *requestHandler) handleRX(w http.ResponseWriter, r *http.Request, id, se
 			}
 			return nil, true
 		}
-		p, err := s.buffer.read(streamCtx, offset)
+		var p []byte
+		var err error
+		if readySegment {
+			// A ready bounded segment needs one body write, rather than small
+			// flushes that can consume a filtered connection's packet budget.
+			p, err = s.buffer.readReady(offset, segmentEnd)
+		} else {
+			p, err = s.buffer.read(streamCtx, offset)
+		}
 		if err != nil {
 			if firstData {
 				switch {

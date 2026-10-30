@@ -345,6 +345,18 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	if rxErr != nil {
 		return nil, rxErr
 	}
+	if rxOptions != nil && rxOptions.AuthKey == "" && tlsConfig == nil && realityConfig == nil {
+		publicHTTP := !dest.Address.Family().IsIP() || !dest.Address.IP().IsLoopback()
+		for _, address := range rxOptions.SpreadAddresses {
+			if !net.ParseAddress(address).IP().IsLoopback() {
+				publicHTTP = true
+				break
+			}
+		}
+		if publicHTTP {
+			return nil, errors.New("Xray-RX over public HTTP requires rx.authKey")
+		}
+	}
 	if rxOptions != nil && (httpVersion == "3" || browser_dialer.HasBrowserDialer()) {
 		return nil, errors.New("Xray-RX phase 1 supports native HTTP/1.1 and HTTP/2 only")
 	}

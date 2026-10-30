@@ -86,6 +86,8 @@ func TestRXServerSegmentFirstFlush(t *testing.T) {
 		{"ready_resume", 256, 0, 512, 256},
 		{"pending_resume", 256, 0, 384, 0},
 		{"ready_parallel", 256, 2, 512, 256},
+		{"ready_large_resume", 8192, 0, 8448, 8192},
+		{"ready_large_parallel", 8192, 2, 8448, 8192},
 		{"pending_parallel", 256, 2, 384, 0},
 		{"legacy", 0, 0, 512, 0},
 	} {
@@ -115,7 +117,7 @@ func TestRXServerSegmentFirstFlush(t *testing.T) {
 				if tc.parallel != 0 {
 					r.Header.Set(rxParallelHeader, strconv.Itoa(int(tc.parallel)))
 					if action == "segment" {
-						r.Header.Set(rxSegmentEndHeader, "512")
+						r.Header.Set(rxSegmentEndHeader, strconv.Itoa(256+int(tc.segment)))
 						r.Header.Set(rxAckHeader, "256")
 					}
 				}
@@ -136,6 +138,9 @@ func TestRXServerSegmentFirstFlush(t *testing.T) {
 			w := request(action, 256, generation)
 			if w.first != tc.first {
 				t.Fatalf("first flush bytes=%d, want %d", w.first, tc.first)
+			}
+			if tc.first > 0 && w.Header().Get("Content-Length") != strconv.Itoa(tc.first) {
+				t.Fatal("ready segment length missing", w.Header().Get("Content-Length"))
 			}
 		})
 	}

@@ -400,6 +400,18 @@ func rxCloseConn(conn net.Conn) {
 	if c, ok := conn.(interface{ SuppressCloseNotify() }); ok {
 		c.SuppressCloseNotify()
 	}
+	// 受限连接在第 10 个下行包后不再收到 FIN-ACK，直接置 Linger(0) 发送 RST 避免内核重传风暴。
+	for u := conn; u != nil; {
+		if tcp, ok := u.(interface{ SetLinger(int) error }); ok {
+			_ = tcp.SetLinger(0)
+			break
+		}
+		if w, ok := u.(interface{ NetConn() net.Conn }); ok {
+			u = w.NetConn()
+			continue
+		}
+		break
+	}
 	conn.Close()
 }
 
@@ -434,6 +446,11 @@ func (c *rxSocket) Write(p []byte) (int, error) {
 }
 
 func (c *rxSocket) Close() error {
+	if c.spread != nil {
+		if tcp, ok := c.Conn.(interface{ SetLinger(int) error }); ok {
+			_ = tcp.SetLinger(0)
+		}
+	}
 	err := c.Conn.Close()
 	c.once.Do(func() {
 		errors.LogInfo(c.ctx, "Xray-RX: TCP closed, id ", c.id, ", read ", c.read.Load(), ", written ", c.written.Load(), ", lifetime_ms ", time.Since(c.started).Milliseconds(), ", reason owner-close")

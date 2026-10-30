@@ -232,6 +232,62 @@ func TestRXParallelRequestACKSnapshot(t *testing.T) {
 	response.body.Close()
 }
 
+func TestRXParallelRepairsUnreadPrefixWithoutACK(t *testing.T) {
+	const segment = 512
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 96)
+	repaired := make(chan struct{})
+	var injected atomic.Bool
+	var release sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		rxTestConfirm(w, req, uint64(len(payload)), true)
+		w.Header().Set(rxWindowHeader, "4096")
+		w.Header().Set(rxSegmentHeader, strconv.Itoa(segment))
+		w.Header().Set(rxParallelHeader, "2")
+		if req.Method == "HEAD" {
+			return
+		}
+		start, _ := strconv.ParseUint(req.Header.Get(rxOffsetHeader), 10, 64)
+		end := min(start+segment, uint64(len(payload)))
+		if boundary := req.Header.Get(rxSegmentEndHeader); boundary != "" {
+			end, _ = strconv.ParseUint(boundary, 10, 64)
+		}
+		w.Header().Set(rxSegmentEndHeader, strconv.FormatUint(end, 10))
+		w.Header().Set("Content-Length", strconv.FormatUint(end-start, 10))
+		if req.Header.Get(rxActionHeader) == "open" {
+			http.NewResponseController(w).Flush()
+			select {
+			case <-repaired:
+			case <-req.Context().Done():
+				return
+			}
+		} else if start == segment && injected.CompareAndSwap(false, true) {
+			w.Write(payload[start : start+137])
+			return // The advertised length makes the client observe a partial EOF.
+		} else if injected.Load() && start < 2*segment {
+			if start != segment+137 || end != 2*segment || req.Header.Get(rxAckHeader) != "0" {
+				t.Errorf("repair offset=%d end=%d ACK=%s; unread bytes must be retained without ACK", start, end, req.Header.Get(rxAckHeader))
+			}
+			release.Do(func() { close(repaired) })
+		}
+		w.Write(payload[start:end])
+	}))
+	defer srv.Close()
+	opts := rxTestClientOptions()
+	opts.MaxResponseBytes, opts.MaxConcurrentSegments, opts.MaxReplayBytes = segment, 2, 4096
+	opts.MaxSegments = 32
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	r, err := newRXDownlink(ctx, &Config{Mode: "packet-up"}, opts, srv.URL, "unread-prefix", func() *http.Client { return srv.Client() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got, err := io.ReadAll(r)
+	if err != nil || !bytes.Equal(got, payload) || !injected.Load() {
+		t.Fatalf("bytes=%d err=%v injected=%v stats=%+v", len(got), err, injected.Load(), r.statsSnapshot())
+	}
+}
+
 func TestRXParallelConfirmation(t *testing.T) {
 	for _, mode := range []string{"old", "duplicate", "unsolicited", "changed"} {
 		t.Run(mode, func(t *testing.T) {

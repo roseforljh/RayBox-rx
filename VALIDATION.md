@@ -2,6 +2,16 @@
 
 日期：2026-10-30。项目名：RayBox-rx。
 
+## HTTP/80 RX 控制安全加固
+
+- 用户随后明确要求提交并推送。提交前对当前组合源码重新执行 RX/TLS/配置定向 race：splithttp 6.619 秒、tls 1.211 秒、infra/conf 1.107 秒；sing-box Xray 集成检查 0.381 秒、protobuf 生成检查及 Linux 内核构建通过。检查覆盖本次发布的安全、分段恢复及调度改动；现场速度仍对应报告中的独立测速快照，不宣称当前组合源码重新完成远端测速。
+- 待推送的 30 个文件通过已知私有值、私钥标记、Go 格式和 diff 空白检查；`artifacts/` 无 Git 跟踪文件，服务器资料与私有配置继续被忽略。
+- 新增 `rx.authKey` 配置及双向控制认证加密、防重放、服务端 capability 轮换、上传载荷摘要绑定和公网无密钥保护。测试包括重启后的随机响应 nonce、外部 `spreadAddresses`、关闭 RX 后的普通上传。
+- 最终源码定向普通检查通过：splithttp 4.786 秒、tls 0.066 秒、infra/conf 0.062 秒；独立安全快照的定向 race 通过：splithttp 1.330 秒、infra/conf 1.099 秒。此前 protobuf 生成检查和 sing-box Xray 集成检查已通过，本次最后修正没有再改 protobuf 或集成配置。
+- 最终独立 Linux 二进制在俄罗斯 → 既有 CF 池 → 英国、HTTP/80 + VLESS 加密条件下完整传输 64 MiB，66.489 秒、1.009323 MB/s，SHA-256 一致。原分段/并发参数保留，未实际下载 1 GiB。
+- 收尾只读回查：四组实验服务均停止、实验端口已释放、原服务 PID 和监听一致。私有服务器资料与实验配置由 Git 忽略；现场实验阶段未提交或推送。
+- `go vet ./transport/internet/splithttp` 的 9 条 protobuf 含锁结构复制告警与原测速快照逐字相同，未为清除旧告警修改 XMUX。保护范围、性能证据及仍可见的 HTTP 元数据详见 [安全加固报告](Xray-core/docs/xhttp-rx-security-20261030.md)。
+
 ## 本次发布检查
 
 - 源码来自两套冻结的Git工作区。复制前后逐文件SHA-256和文件清单一致：Xray-core清单1203项，sing-box清单1575项。私有现场报告以脱敏摘要替代。

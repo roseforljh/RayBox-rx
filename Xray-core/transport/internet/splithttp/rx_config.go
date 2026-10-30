@@ -31,7 +31,10 @@ func (c *Config) NormalizeRX() (*RXConfig, error) {
 		}
 	}
 	r := c.Rx
-	n := &RXConfig{Enabled: true, StallDetect: r.StallDetect}
+	if _, err := rxDecodeAuthKey(r.AuthKey); err != nil {
+		return nil, err
+	}
+	n := &RXConfig{Enabled: true, StallDetect: r.StallDetect, AuthKey: r.AuthKey}
 	fields := []struct {
 		name                  string
 		value, def, low, high int32

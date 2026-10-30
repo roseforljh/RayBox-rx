@@ -3,6 +3,8 @@ package splithttp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -110,7 +112,18 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
 		buf.ReleaseMulti(payload)
 		return err
 	}
+	var payloadHash string
+	if rxEnabled && rxReader.auth != nil {
+		digest := sha256.New()
+		for _, b := range payload {
+			digest.Write(b.Bytes())
+		}
+		payloadHash = hex.EncodeToString(digest.Sum(nil))
+	}
 	c.transportConfig.FillPacketRequest(req, sessionId, seqStr, payload)
+	if payloadHash != "" {
+		req.Header.Set(rxPayloadHashHeader, payloadHash)
+	}
 	if rxEnabled {
 		return rxReader.postPacket(req, seqStr)
 	}

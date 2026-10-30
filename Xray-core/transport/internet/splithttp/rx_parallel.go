@@ -3,6 +3,7 @@ package splithttp
 import (
 	"context"
 	"io"
+	"math/rand/v2"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -11,7 +12,11 @@ import (
 // ponytail: fixed from field data (a healthy segment's headers and 1KiB body
 // arrive about 140ms after its connection is ready, frozen connections never
 // recover); make it a config field only if a much higher-RTT path needs it.
-const rxSegmentResponseTimeout = time.Second
+const (
+	rxSegmentResponseTimeout = time.Second
+	rxSegmentBodyIdleTimeout = 400 * time.Millisecond
+	rxParallelLaunchInterval = 3 * time.Millisecond
+)
 
 // rxParallel runs at most N active jobs and keeps at most window/S fixed-size
 // jobs, including completed unread jobs.
@@ -24,6 +29,7 @@ type rxParallel struct {
 	next, produced, final uint64
 	done, closed          bool
 	active                uint64
+	nextLaunch            time.Time
 }
 
 type rxSegmentJob struct {
@@ -36,6 +42,7 @@ type rxSegmentJob struct {
 	lastProgress      time.Time
 	pendingSince      time.Time
 	recovery          time.Time
+	launchAt          time.Time
 }
 
 func newRXParallel(r *rxDownlink, response rxResponse) *rxParallel {
@@ -71,6 +78,25 @@ func (p *rxParallel) peaks() {
 	s.PeakPrefetchBytes = max(s.PeakPrefetchBytes, buffered)
 }
 
+// reserveLaunchLocked 按固定间隔平滑发包，避免并发建连与重连在同一毫秒突发导致限速队列丢包。
+func (p *rxParallel) reserveLaunchLocked(minDelay time.Duration, head bool) time.Time {
+	now := time.Now().Add(minDelay)
+	if p.r.parallel < 8 {
+		return now
+	}
+	if head {
+		if now.Add(rxParallelLaunchInterval).After(p.nextLaunch) {
+			p.nextLaunch = now.Add(rxParallelLaunchInterval)
+		}
+		return now
+	}
+	if p.nextLaunch.After(now) {
+		now = p.nextLaunch
+	}
+	p.nextLaunch = now.Add(rxParallelLaunchInterval)
+	return now
+}
+
 // schedule keeps at most N GETs active but lets completed jobs queue up to the
 // replay window, so one frozen head job does not idle every other connection.
 func (p *rxParallel) schedule() {
@@ -88,7 +114,7 @@ func (p *rxParallel) schedule() {
 		if p.done {
 			end = min(end, p.final)
 		}
-		j := &rxSegmentJob{start: p.next, end: end, data: make([]byte, int(p.r.segment)), lastProgress: time.Now()}
+		j := &rxSegmentJob{start: p.next, end: end, data: make([]byte, int(p.r.segment)), lastProgress: time.Now(), launchAt: p.reserveLaunchLocked(0, len(p.jobs) == 0)}
 		p.jobs = append(p.jobs, j)
 		p.next = end
 		p.active++
@@ -145,7 +171,27 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 			r.mu.Unlock()
 			return
 		}
-		start, end := j.start+uint64(j.consumed), j.end
+		launchAt := j.launchAt
+		r.mu.Unlock()
+		if !opened {
+			if wait := time.Until(launchAt); wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-r.ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+		}
+		r.mu.Lock()
+		if p.closed || r.terminal != nil {
+			r.mu.Unlock()
+			return
+		}
+		// Retain the unread prefix too. Only consumed bytes advance the ACK,
+		// but a replacement GET can start after every byte already buffered.
+		start, end := j.start+uint64(j.written), j.end
 		if start >= end {
 			j.complete = true
 			p.signal()
@@ -154,15 +200,12 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 		}
 		full := end <= p.produced
 		body := j.body
+		prevWritten := j.written
 		r.mu.Unlock()
 		ctx := r.ctx
-		cancel := func() {}
 		var openTimer *time.Timer
 		if opened && full {
 			openTimer = time.AfterFunc(time.Duration(r.opts.RequestTimeoutMs)*time.Millisecond, func() { body.Close() })
-		}
-		if !opened && full {
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(r.opts.RequestTimeoutMs)*time.Millisecond)
 		}
 		var err error
 		if !opened {
@@ -174,14 +217,14 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 				if p.closed || r.terminal != nil {
 					r.mu.Unlock()
 					body.Close()
-					cancel()
 					return
 				}
 				j.body, j.lastProgress = body, time.Now()
 				err = p.observeLocked(response)
+				full = end <= p.produced
 				r.mu.Unlock()
 				if full {
-					openTimer = time.AfterFunc(rxSegmentResponseTimeout, func() { body.Close() })
+					openTimer = time.AfterFunc(min(rxSegmentResponseTimeout, time.Duration(r.opts.RequestTimeoutMs)*time.Millisecond), func() { body.Close() })
 				}
 			}
 		}
@@ -218,7 +261,16 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 					j.complete = true
 					p.signal()
 				}
+				full = j.end <= p.produced
 				r.mu.Unlock()
+				if n > 0 && !complete && (full || openTimer != nil) {
+					idle := min(rxSegmentBodyIdleTimeout, time.Duration(r.opts.RequestTimeoutMs)*time.Millisecond)
+					if openTimer != nil {
+						openTimer.Reset(idle)
+					} else {
+						openTimer = time.AfterFunc(idle, func() { body.Close() })
+					}
+				}
 				if complete {
 					break
 				}
@@ -240,7 +292,6 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 			}
 			body.Close()
 		}
-		cancel()
 		r.mu.Lock()
 		j.body = nil
 		if p.closed || r.terminal != nil {
@@ -281,22 +332,26 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 			r.fail(err)
 			return
 		}
-		j.written = j.consumed
 		if j.recovery.IsZero() {
 			j.recovery = time.Now()
 		}
+		if j.written > prevWritten {
+			attempt = 0
+		}
 		attempt++
 		delay := min(2*time.Second, time.Duration(r.opts.RetryDelayMs)*time.Millisecond*time.Duration(1<<min(attempt-1, uint(10))))
-		errors.LogInfo(r.ctx, "Xray-RX: retrying parallel segment, start ", j.start+uint64(j.consumed), ", end ", j.end, ", attempt ", r.stats.ReconnectAttempts)
+		head := len(p.jobs) != 0 && j.start <= p.jobs[0].start+r.segment
+		if r.parallel >= 8 {
+			capDelay := 200 * time.Millisecond
+			if head {
+				capDelay = 40 * time.Millisecond
+			}
+			delay = min(capDelay, delay) + time.Duration(rand.IntN(20))*time.Millisecond
+		}
+		j.launchAt = p.reserveLaunchLocked(delay, head)
+		errors.LogInfo(r.ctx, "Xray-RX: retrying parallel segment, start ", j.start+uint64(j.written), ", end ", j.end, ", attempt ", r.stats.ReconnectAttempts)
 		p.signal()
 		r.mu.Unlock()
-		timer := time.NewTimer(delay)
-		select {
-		case <-r.ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
 	}
 }
 
@@ -373,7 +428,11 @@ func (p *rxParallel) detectStall() {
 		if j.pendingSince.IsZero() {
 			j.pendingSince = time.Now()
 		}
-		if time.Since(j.pendingSince) >= time.Duration(r.opts.StallTimeoutMs)*time.Millisecond {
+		timeout := time.Duration(r.opts.StallTimeoutMs) * time.Millisecond
+		if j.end <= p.produced && j.written > 0 {
+			timeout = min(timeout, rxSegmentBodyIdleTimeout)
+		}
+		if time.Since(j.pendingSince) >= timeout {
 			r.stats.ConfirmedStalls++
 			bodies = append(bodies, j.body)
 			j.pendingSince = time.Time{}
