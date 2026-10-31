@@ -117,3 +117,15 @@
 - 实际代理普通XHTTP、RX单入口、RX原13池、普通XHTTP后测均125秒，非零前缀hash一致；800ms私有overlay的相关RXParallel测试通过，但现场ABBA遭路径失效，无有效参数优化结论，默认400ms未改。
 - 本地真实TCP/TLS/H2/XHTTP的Go/Chrome、普通/OOB四档各50MiB/hash一致，未发现本地固定0.5MB/s上限，不代替公网性能验收。
 - 新增10个目录统一双端清理审计通过；无新增源码性能修复，未改CF/DNS或远端生产。CF事件查询未完成，不宣称已确认CF拦截。
+
+## 最新内核构建及两端项目接入（2026-10-31 UTC）
+
+用户要求提交当前代码、编译最新内核并放入服务器与客户端项目。此次发布源码基于提交`b765f79e8ade9313c7211c9d10afacf6bfc2b074`；后续记录提交仅修改文档。RX/OOB默认关闭，未修改既有节点配置或远端生产进程。
+
+- 修复`sing-box/export-simplenet.ps1`：从当前组合仓库取构建源码，原始仓库只提供基线对象；临时克隆隔离索引与对象。补齐sing-box受保护拨号的`common/dialer/default.go`和`option/outbound.go`，排除更新部分的测试、文档、现场数据。PowerShell语法检查及实际导出通过。
+- 客户端两组补丁在干净上游源码上逐一`git apply --check --whitespace=error`并应用通过。与当前仓库逐文件核对，Xray 897项、sing-box 1078项构建源码一致，仅调整客户端私有Xray副本的模块替换路径。
+- Go1.27.3构建Linux amd64/arm64/armv7，ELF架构检查及三个资产的大小/SHA-256读取校验通过。amd64在WSL实际启动版本命令，并通过含OOB和RX备用的配置自检。服务端项目的版本锁和构建脚本已固定对应提交，三个二进制放入项目现有资产目录。
+- JDK17、NDK28.0.13004108与gomobile0.1.13构建标准API24及兼容API21两套AAR，每套均包含arm64-v8a、armeabi-v7a、x86、x86_64；ZIP完整性、ELF架构和输出SHA-256核对通过。标准AAR SHA-256为`0333400c60de3957d113ce537e46aa88c017696e375076a8085ef10a4651615c`，兼容AAR为`bbffb1ff3839a66f6c787905d0ecbf1cc0819f05c8c706f5f89254739eab2486`。
+- 两套AAR已复制到SimpleNet现有`third_party/sing-box-build/`，同步来源锁、补丁、构建指纹及SHA-256。`:app:verifyNativeCore :app:compileDebugKotlin --offline`通过，未做手机实机联网验收。
+- sing-box的`go test ./common/dialer ./protocol/xray -count=1 -timeout 120s`通过；服务端`raybox-server.test.ts`和`xhttp.test.ts`共5个测试、50次断言通过。沿用此前RX/OOB源码定向测试证据，没有重跑全仓或远端性能实验。
+- 客户端和服务端的86个既有无关改动文件逐项hash保持，不纳入本次提交。二进制、AAR、配置样本、构建日志及可复核记录放在忽略的产物目录，没有提交凭据或实验资料。
