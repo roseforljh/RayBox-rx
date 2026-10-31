@@ -98,7 +98,7 @@ func decideHTTPVersion(tlsConfig *tls.Config, realityConfig *reality.Config) str
 	return "2"
 }
 
-func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStreamConfig) DialerClient {
+func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStreamConfig, shared ...*rxSpread) DialerClient {
 	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
 	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
 
@@ -111,12 +111,19 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 
 	if tlsConfig != nil {
 		gotlsConfig = tlsConfig.GetTLSConfig(tls.WithDestination(dest))
+		if httpVersion == "1.1" {
+			gotlsConfig.NextProtos = []string{"http/1.1"}
+		} else if httpVersion == "2" {
+			gotlsConfig.NextProtos = []string{"h2"}
+		}
 	}
 
 	transportConfig := streamSettings.ProtocolSettings.(*Config)
 
 	var spread *rxSpread
-	if rx := transportConfig.GetRx(); rx.GetEnabled() && rx.GetMaxResponseBytes() != 0 && len(rx.GetSpreadAddresses()) != 0 {
+	if len(shared) != 0 {
+		spread = shared[0]
+	} else if rx := transportConfig.GetRx(); rx.GetEnabled() && rx.GetMaxResponseBytes() != 0 && len(rx.GetSpreadAddresses()) != 0 {
 		spread = newRXSpread(rx.GetSpreadAddresses())
 	}
 	dialContext := func(ctxInner context.Context) (net.Conn, error) {
@@ -131,7 +138,7 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		}
 		// A dial abandoned because another hedge won early says nothing about this address.
 		failed := func() {
-			if spreadIndex >= 0 && (ctxInner.Err() == nil || time.Since(started) >= rxHedgeDelay) {
+			if spreadIndex >= 0 && ctxInner.Err() != context.Canceled {
 				spread.report(spreadIndex, false)
 			}
 		}
@@ -168,7 +175,17 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 			}
 			if fingerprint != nil || transportConfig.GetRx().GetEnabled() {
 				handshakeStarted := time.Now()
-				if err := conn.(tls.Interface).HandshakeContext(ctxInner); err != nil {
+				if u, ok := conn.(*tls.UConn); ok {
+					err = u.HTTPHandshakeContext(ctxInner, gotlsConfig.NextProtos[0])
+				} else {
+					err = conn.(tls.Interface).HandshakeContext(ctxInner)
+				}
+				protocol := conn.(tls.Interface).NegotiatedProtocol()
+				if err == nil && ((httpVersion == "2" && protocol != "h2") ||
+					(httpVersion == "1.1" && protocol != "" && protocol != "http/1.1")) {
+					err = fmt.Errorf("XHTTP unexpected ALPN %q for HTTP/%s", protocol, httpVersion)
+				}
+				if err != nil {
 					failed()
 					conn.Close()
 					return nil, err
@@ -320,6 +337,7 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 			Transport: transport,
 		},
 		httpVersion:    httpVersion,
+		spread:         spread,
 		uploadRawPool:  &sync.Pool{},
 		dialUploadConn: dialContext,
 	}
@@ -494,12 +512,14 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		if rxOptions != nil {
 			var rxReader *rxDownlink
 			var pool *rxPreconnect
+			base := httpClient.(*DefaultDialerClient)
 			if rxOptions.MaxResponseBytes != 0 {
-				base := createHTTPClient(dest, streamSettings).(*DefaultDialerClient)
 				pool = &rxPreconnect{dial: base.dialUploadConn, version: httpVersion, opts: rxOptions}
 			}
 			rxReader, err = newRXDownlink(ctx, transportConfiguration, rxOptions, requestURL2.String(), sessionId, func() *http.Client {
-				return createHTTPClient(dest, streamSettings).(*DefaultDialerClient).client
+				// Control/upload transports stay exclusive, but retain the same
+				// address outcomes as the download pool and later sessions.
+				return createHTTPClient(dest, streamSettings, base.spread).(*DefaultDialerClient).client
 			}, pool)
 			if err == nil {
 				conn.reader, conn.remoteAddr, conn.localAddr = rxReader, rxReader.remoteAddr, rxReader.localAddr

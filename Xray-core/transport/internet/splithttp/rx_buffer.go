@@ -15,16 +15,34 @@ type rxBuffer struct {
 	writeMu           sync.Mutex
 	mu                sync.Mutex
 	data              []byte
+	capacity          int
 	base, end         uint64
 	finished, aborted bool
 	changed           chan struct{}
 }
 
 func newRXBuffer(capacity int) *rxBuffer {
-	return &rxBuffer{data: make([]byte, capacity), changed: make(chan struct{})}
+	return &rxBuffer{capacity: capacity, changed: make(chan struct{})}
 }
 
 func (b *rxBuffer) signal() { close(b.changed); b.changed = make(chan struct{}) }
+
+// grow keeps absolute offsets valid while moving the retained ring contents.
+// Called under mu; an empty session does not reserve its configured maximum.
+func (b *rxBuffer) grow(needed int) {
+	if needed <= len(b.data) {
+		return
+	}
+	data := make([]byte, min(b.capacity, max(4096, 2*len(b.data), needed)))
+	for offset := b.base; offset < b.end; {
+		from := int(offset % uint64(len(b.data)))
+		to := int(offset % uint64(len(data)))
+		n := min(int(b.end-offset), len(b.data)-from, len(data)-to)
+		copy(data[to:to+n], b.data[from:from+n])
+		offset += uint64(n)
+	}
+	b.data = data
+}
 
 func (b *rxBuffer) Write(p []byte) (int, error) {
 	b.writeMu.Lock()
@@ -36,13 +54,14 @@ func (b *rxBuffer) Write(p []byte) (int, error) {
 			b.mu.Unlock()
 			return n, io.ErrClosedPipe
 		}
-		space := uint64(len(b.data)) - (b.end - b.base)
+		space := uint64(b.capacity) - (b.end - b.base)
 		if space == 0 {
 			changed := b.changed
 			b.mu.Unlock()
 			<-changed
 			continue
 		}
+		b.grow(int(b.end-b.base) + min(len(p), int(space)))
 		pos := int(b.end % uint64(len(b.data)))
 		count := min(len(p), int(space), len(b.data)-pos)
 		copy(b.data[pos:pos+count], p[:count])
@@ -66,6 +85,9 @@ func (b *rxBuffer) state(offset uint64, acknowledge bool) (uint64, bool, error) 
 	}
 	if acknowledge && offset > b.base {
 		b.base = offset
+		if b.base == b.end {
+			b.data = nil
+		}
 		b.signal()
 	}
 	return b.end, b.finished, nil
@@ -122,6 +144,9 @@ func (b *rxBuffer) readReady(offset, end uint64) ([]byte, error) {
 		return nil, errRXOffset
 	}
 	p := make([]byte, int(end-offset))
+	if len(p) == 0 {
+		return p, nil
+	}
 	pos := int(offset % uint64(len(b.data)))
 	n := copy(p, b.data[pos:])
 	copy(p[n:], b.data[:len(p)-n])

@@ -614,6 +614,66 @@ func TestRXHedgeDial(t *testing.T) {
 	}
 }
 
+func TestRXHedgeDialCancellationDoesNotWaitForDialer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	dial := rxHedgeDial(func(context.Context) (net.Conn, error) {
+		close(entered)
+		<-release // An embedding dialer need not honor cancellation promptly.
+		return nil, context.Canceled
+	})
+	returned := make(chan error, 1)
+	go func() { _, err := dial(ctx); returned <- err }()
+	<-entered
+	cancel()
+	select {
+	case err := <-returned:
+		if err != context.Canceled {
+			t.Errorf("cancellation returned %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("cancelled hedge waited for the underlying dialer")
+		once.Do(func() { close(release) })
+		<-returned
+	}
+}
+
+func TestRXHedgeDialClosesLateSuccessAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	late, peer := net.Pipe()
+	defer late.Close()
+	defer peer.Close()
+	dial := rxHedgeDial(func(context.Context) (net.Conn, error) {
+		close(entered)
+		<-release
+		return late, nil
+	})
+	returned := make(chan error, 1)
+	go func() { _, err := dial(ctx); returned <- err }()
+	<-entered
+	cancel()
+	select {
+	case err := <-returned:
+		if err != context.Canceled {
+			t.Fatal("cancelled dial returned", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("cancelled dial did not return promptly")
+	}
+	once.Do(func() { close(release) })
+	peer.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatal("late successful connection was not closed", err)
+	}
+}
+
 func TestRXSpreadAddressesNormalize(t *testing.T) {
 	base := func(addresses []string) *Config {
 		return &Config{Mode: "packet-up", Rx: &RXConfig{Enabled: true, MaxResponseBytes: 1024, SpreadAddresses: addresses}}
@@ -643,13 +703,48 @@ func TestRXSpreadPrefersHealthyAddress(t *testing.T) {
 	for range 3000 {
 		picks[s.pick()]++
 	}
-	// A dead address is only chosen when both samples hit dead ones (about 4/9),
-	// so the healthy one must dominate but the others are still probed.
-	if picks[2] < 1500 || picks[0] == 0 || picks[1] == 0 {
+	if picks[2] != 3000 {
 		t.Fatalf("picks %v", picks)
+	}
+	// Expired cooldowns allow failed destinations to be tried again.
+	s.coolUntil[0], s.coolUntil[1] = time.Time{}, time.Time{}
+	picks = [3]int{}
+	for range 3000 {
+		picks[s.pick()]++
+	}
+	if picks[2] < 1500 || picks[0] == 0 || picks[1] == 0 {
+		t.Fatalf("recovery probes missing: %v", picks)
 	}
 	s.report(2, true)
 	if s.scores[2] != 1 {
 		t.Fatalf("score %v", s.scores[2])
+	}
+}
+
+func TestRXSpreadCooldownRecoveryAndAllFailed(t *testing.T) {
+	s := newRXSpread([]string{"192.0.2.1", "192.0.2.2"})
+	s.report(0, false)
+	if !s.coolUntil[0].IsZero() {
+		t.Fatal("a single failure cooled down an address")
+	}
+	s.report(0, false)
+	if !time.Now().Before(s.coolUntil[0]) {
+		t.Fatal("repeated failure did not cool down")
+	}
+	for range 100 {
+		if s.pick() != 1 {
+			t.Fatal("cooling address selected over an eligible address")
+		}
+	}
+	s.report(1, false)
+	s.report(1, false)
+	s.coolUntil[0] = time.Now().Add(time.Second)
+	s.coolUntil[1] = time.Now().Add(2 * time.Second)
+	if s.pick() != 0 {
+		t.Fatal("an all-failed pool did not select its earliest recovery candidate")
+	}
+	s.report(0, true)
+	if s.failures[0] != 0 || !s.coolUntil[0].IsZero() {
+		t.Fatal("successful delivery did not clear cooldown")
 	}
 }

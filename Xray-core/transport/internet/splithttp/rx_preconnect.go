@@ -275,12 +275,21 @@ const (
 func rxHedgeDial(dial func(context.Context) (net.Conn, error)) func(context.Context) (net.Conn, error) {
 	return func(ctx context.Context) (net.Conn, error) {
 		type result struct {
-			index int
-			conn  net.Conn
-			err   error
+			index     int
+			conn      net.Conn
+			err       error
+			stopClose func() bool
 		}
 		results := make(chan result, rxHedgeAttempts)
 		var cancels []context.CancelFunc
+		winner := -1
+		defer func() {
+			for i, cancel := range cancels {
+				if i != winner {
+					cancel()
+				}
+			}
+		}()
 		launch := func() {
 			attemptCtx, cancel := context.WithCancel(ctx)
 			cancels = append(cancels, cancel)
@@ -290,7 +299,17 @@ func rxHedgeDial(dial func(context.Context) (net.Conn, error)) func(context.Cont
 			}
 			go func() {
 				conn, err := dial(attemptCtx)
-				results <- result{index, conn, err}
+				// A cancelled caller must not wait for an embedding dialer.
+				// Every loser, including a late success, closes itself on cancel.
+				stopClose := context.AfterFunc(attemptCtx, func() {
+					if conn != nil {
+						rxCloseConn(conn)
+					}
+				})
+				if conn == nil && err == nil {
+					err = fmt.Errorf("Xray-RX dial returned a nil connection")
+				}
+				results <- result{index, conn, err, stopClose}
 			}()
 		}
 		launch()
@@ -300,6 +319,8 @@ func rxHedgeDial(dial func(context.Context) (net.Conn, error)) func(context.Cont
 		var lastErr error
 		for {
 			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			case <-timer.C:
 				if len(cancels) < rxHedgeAttempts && ctx.Err() == nil {
 					launch()
@@ -308,19 +329,14 @@ func rxHedgeDial(dial func(context.Context) (net.Conn, error)) func(context.Cont
 				}
 			case r := <-results:
 				pending--
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				if r.err == nil {
-					for i, cancel := range cancels {
-						if i != r.index {
-							cancel()
-						}
+					if !r.stopClose() {
+						return nil, ctx.Err()
 					}
-					go func(n int) {
-						for ; n > 0; n-- {
-							if late := <-results; late.err == nil {
-								rxCloseConn(late.conn)
-							}
-						}
-					}(pending)
+					winner = r.index
 					return r.conn, nil
 				}
 				cancels[r.index]()
@@ -343,25 +359,54 @@ func rxHedgeDial(dial func(context.Context) (net.Conn, error)) func(context.Cont
 // ponytail: power-of-two-choices on a global mutex; per-address locks or a
 // heap only if thousands of addresses or dials per second need it.
 type rxSpread struct {
-	mu     sync.Mutex
-	addrs  []string
-	scores []float64
+	mu        sync.Mutex
+	addrs     []string
+	scores    []float64
+	failures  []uint32
+	coolUntil []time.Time
 }
 
 func newRXSpread(addrs []string) *rxSpread {
-	s := &rxSpread{addrs: addrs, scores: make([]float64, len(addrs))}
+	s := &rxSpread{addrs: append([]string(nil), addrs...), scores: make([]float64, len(addrs)),
+		failures: make([]uint32, len(addrs)), coolUntil: make([]time.Time, len(addrs))}
 	for i := range s.scores {
 		s.scores[i] = 1
 	}
 	return s
 }
 
-// pick samples two addresses and keeps the healthier one, so poor addresses
-// fade out but are still retried occasionally when the path changes.
+// pick samples two eligible addresses. Repeated failures cool down briefly;
+// expiry permits recovery probes, and an entirely cold pool still makes progress.
 func (s *rxSpread) pick() int {
 	a, b := rand.IntN(len(s.addrs)), rand.IntN(len(s.addrs))
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	aCold, bCold := now.Before(s.coolUntil[a]), now.Before(s.coolUntil[b])
+	if aCold && bCold {
+		best := -1
+		for i := range s.addrs {
+			if !now.Before(s.coolUntil[i]) && (best < 0 || s.scores[i] > s.scores[best]) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			return best
+		}
+		// Do not permanently exclude the pool when all paths have failed.
+		for i := range s.addrs {
+			if s.coolUntil[i].Before(s.coolUntil[a]) {
+				a = i
+			}
+		}
+		return a
+	}
+	if aCold {
+		return b
+	}
+	if bCold {
+		return a
+	}
 	if s.scores[b] > s.scores[a] {
 		return b
 	}
@@ -374,8 +419,18 @@ func (s *rxSpread) report(i int, ok bool) {
 		v = 1
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.scores[i] = 0.9*s.scores[i] + 0.1*v
-	s.mu.Unlock()
+	if ok {
+		s.failures[i] = 0
+		s.coolUntil[i] = time.Time{}
+	} else {
+		s.failures[i] = min(s.failures[i]+1, uint32(32))
+		if s.failures[i] >= 2 {
+			delay := min(30*time.Second, time.Second*time.Duration(1<<min(s.failures[i]-2, uint32(5))))
+			s.coolUntil[i] = time.Now().Add(delay)
+		}
+	}
 }
 
 // rxReportConn records whether a connection delivered its segment; only the

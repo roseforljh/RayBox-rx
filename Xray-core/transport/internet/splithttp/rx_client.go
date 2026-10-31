@@ -691,9 +691,9 @@ func (r *rxDownlink) monitor() {
 			failures = 0
 		}
 		if r.prefetch != nil {
-			if err == nil {
-				r.prefetch.detectStall()
-			}
+			// Previously confirmed produced bytes remain valid when a later
+			// control request fails. Repair their stalled data path regardless.
+			r.prefetch.detectStall()
 			continue
 		}
 		r.mu.Lock()

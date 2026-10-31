@@ -200,6 +200,37 @@ func rxDial(t *testing.T, address string, c *Config, security *xtls.Config) stat
 	return conn
 }
 
+func TestXHTTPFingerprintHonorsALPN(t *testing.T) {
+	for _, protocol := range []string{"http/1.1", "h2"} {
+		t.Run(protocol, func(t *testing.T) {
+			ct, hash := cert.MustGenerate(nil, cert.CommonName("localhost"))
+			serverTLS := &xtls.Config{Certificate: []*xtls.Certificate{xtls.ParseCertificate(ct)}, NextProtocol: []string{"h2", "http/1.1"}}
+			ln := rxListen(t, rxIntegrationConfig(false), serverTLS, func(c stat.Connection) { c.Close() })
+			host, port, err := stdnet.SplitHostPort(ln.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := net.PortFromString(port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clientTLS := &xtls.Config{ServerName: "localhost", PinnedPeerCertSha256: [][]byte{hash[:]}, NextProtocol: []string{protocol}, Fingerprint: "chrome"}
+			client := createHTTPClient(net.TCPDestination(net.ParseAddress(host), p), rxStreamConfig(rxIntegrationConfig(false), clientTLS)).(*DefaultDialerClient)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			conn, err := client.dialUploadConn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			state := conn.(interface{ ConnectionState() gotls.ConnectionState }).ConnectionState()
+			if !state.HandshakeComplete || state.NegotiatedProtocol != protocol {
+				t.Fatalf("configured %q, negotiated %q", protocol, state.NegotiatedProtocol)
+			}
+		})
+	}
+}
+
 func rxPayload() []byte {
 	b := make([]byte, 8192)
 	for i := range b {

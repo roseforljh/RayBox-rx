@@ -154,6 +154,45 @@ func (c *UConn) NegotiatedProtocol() string {
 	return state.NegotiatedProtocol
 }
 
+// HTTPHandshakeContext aligns a fingerprint's ALPN with the HTTP transport
+// selected by its caller. A preset must not silently override HTTP/1.1 to H2.
+func (c *UConn) HTTPHandshakeContext(ctx context.Context, protocol string) error {
+	config := *utils.AccessField[*utls.Config](c, "config")
+	if err := c.BuildHandshakeState(); err != nil {
+		return err
+	}
+	config.NextProtos = []string{protocol}
+	// ECH keeps its camouflage ALPN outside and the selected protocol inside.
+	if config.EncryptedClientHelloConfigList != nil {
+		return c.HandshakeContext(ctx)
+	}
+	// ALPS may only advertise protocols offered by ALPN.
+	c.Extensions = slices.DeleteFunc(c.Extensions, func(extension utls.TLSExtension) bool {
+		switch e := extension.(type) {
+		case *utls.ApplicationSettingsExtension:
+			return !slices.Contains(e.SupportedProtocols, protocol)
+		case *utls.ApplicationSettingsExtensionNew:
+			return !slices.Contains(e.SupportedProtocols, protocol)
+		}
+		return false
+	})
+	found := false
+	for _, extension := range c.Extensions {
+		if alpn, ok := extension.(*utls.ALPNExtension); ok {
+			alpn.AlpnProtocols = config.NextProtos
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.Extensions = append(c.Extensions, &utls.ALPNExtension{AlpnProtocols: config.NextProtos})
+	}
+	if err := c.BuildHandshakeState(); err != nil {
+		return err
+	}
+	return c.HandshakeContext(ctx)
+}
+
 func (c *UConn) ConnectionState() tls.ConnectionState {
 	s := c.UConn.ConnectionState()
 	var state tls.ConnectionState

@@ -134,3 +134,47 @@ func TestRXBufferReadyRangeWrapAndOwnership(t *testing.T) {
 		t.Fatal("aborted ready range", err)
 	}
 }
+
+func TestRXBufferAllocatesForRetainedBytes(t *testing.T) {
+	b := newRXBuffer(16 << 20)
+	defer b.abort()
+	if len(b.data) != 0 {
+		t.Fatal("an empty session allocated its entire replay window", len(b.data))
+	}
+	prefix := bytes.Repeat([]byte("a"), 6000)
+	tail := bytes.Repeat([]byte("bcdef"), 8000)
+	b.Write(prefix)
+	if len(b.data) > 16<<10 {
+		t.Fatal("a small payload reserved excessive storage", len(b.data))
+	}
+	b.state(5000, true)
+	b.Write(tail)
+	want := append(append([]byte(nil), prefix[5000:]...), tail...)
+	got, err := b.readReady(5000, uint64(len(prefix)+len(tail)))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatal("growth corrupted the retained wrapped range", len(got), err)
+	}
+	end, _, _ := b.state(uint64(len(prefix)+len(tail)), true)
+	if len(b.data) != 0 {
+		t.Fatal("fully acknowledged storage was retained", len(b.data))
+	}
+	if p, err := b.readReady(end, end); err != nil || len(p) != 0 {
+		t.Fatal("empty acknowledged range", p, err)
+	}
+	b.Write([]byte("next"))
+	got, err = b.readReady(end, end+4)
+	if err != nil || string(got) != "next" {
+		t.Fatal("reuse after release corrupted offsets", string(got), err)
+	}
+}
+
+func BenchmarkRXBufferSmallSession(b *testing.B) {
+	payload := make([]byte, 1024)
+	b.ReportAllocs()
+	for b.Loop() {
+		buffer := newRXBuffer(16 << 20)
+		buffer.Write(payload)
+		buffer.state(uint64(len(payload)), true)
+		buffer.abort()
+	}
+}

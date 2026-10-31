@@ -37,6 +37,7 @@ type DefaultDialerClient struct {
 	client          *http.Client
 	closed          atomic.Bool
 	httpVersion     string
+	spread          *rxSpread
 	// pool of net.Conn, created using dialUploadConn
 	uploadRawPool  *sync.Pool
 	dialUploadConn func(ctxInner context.Context) (net.Conn, error)

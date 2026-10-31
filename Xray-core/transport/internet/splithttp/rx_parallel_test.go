@@ -394,6 +394,12 @@ func TestRXParallelIdleCancelAndBudget(t *testing.T) {
 				case <-time.After(time.Second):
 					t.Fatal("worker leaked")
 				}
+				r.mu.Lock()
+				retained := len(r.prefetch.jobs)
+				r.mu.Unlock()
+				if retained != 0 {
+					t.Fatal("closed workers retained prefetched payloads", retained)
+				}
 			}
 		})
 	}
@@ -443,5 +449,92 @@ func TestRXParallelTLS(t *testing.T) {
 				t.Fatal("parallel TLS bounds", r.statsSnapshot())
 			}
 		})
+	}
+}
+
+func TestRXParallelRepairsKnownStallWhenProbesFail(t *testing.T) {
+	const segment = 256
+	payload := bytes.Repeat([]byte("reliable-stream-"), 48)
+	var probes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get(rxActionHeader) == "probe" {
+			probes.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		offset, _ := strconv.ParseUint(req.Header.Get(rxOffsetHeader), 10, 64)
+		end := min(offset+segment, uint64(len(payload)))
+		rxTestConfirm(w, req, uint64(len(payload)), true)
+		w.Header().Set(rxSegmentHeader, strconv.Itoa(segment))
+		w.Header().Set(rxSegmentEndHeader, strconv.FormatUint(end, 10))
+		w.Header().Set(rxParallelHeader, "2")
+		if req.Header.Get(rxActionHeader) == "open" {
+			// The peer has confirmed pending bytes, but the initial data path
+			// freezes and the separate control path is temporarily unavailable.
+			http.NewResponseController(w).Flush()
+			<-req.Context().Done()
+			return
+		}
+		w.Write(payload[offset:end])
+	}))
+	defer srv.Close()
+	opts := rxTestClientOptions()
+	opts.MaxResponseBytes, opts.MaxConcurrentSegments = segment, 2
+	opts.MaxSegments, opts.RequestTimeoutMs = 16, 2000
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	r := rxTestNewClient(t, ctx, srv, opts)
+	got, err := io.ReadAll(r)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("bytes=%d err=%v stats=%+v", len(got), err, r.statsSnapshot())
+	}
+	if probes.Load() == 0 || r.statsSnapshot().ConfirmedStalls == 0 {
+		t.Fatal("known stall and failed control path were not exercised")
+	}
+}
+
+func TestRXParallelBoundsUnreadPrefetchWithLargeWindow(t *testing.T) {
+	const segment = 256
+	payload := bytes.Repeat([]byte("bounded-prefetch"), 512)
+	var requests atomic.Int32
+	filled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		rxTestConfirm(w, req, uint64(len(payload)), true)
+		w.Header().Set(rxWindowHeader, "65536")
+		w.Header().Set(rxSegmentHeader, strconv.Itoa(segment))
+		w.Header().Set(rxParallelHeader, "2")
+		if req.Method != http.MethodGet {
+			return
+		}
+		offset, _ := strconv.ParseUint(req.Header.Get(rxOffsetHeader), 10, 64)
+		end := min(offset+segment, uint64(len(payload)))
+		w.Header().Set(rxSegmentEndHeader, strconv.FormatUint(end, 10))
+		if requests.Add(1) == 4 {
+			close(filled)
+		}
+		w.Write(payload[offset:end])
+	}))
+	defer srv.Close()
+	opts := rxTestClientOptions()
+	opts.MaxResponseBytes, opts.MaxConcurrentSegments, opts.MaxReplayBytes = segment, 2, 65536
+	opts.MaxSegments = 128
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	r := rxTestNewClient(t, ctx, srv, opts)
+	select {
+	case <-filled:
+	case <-ctx.Done():
+		t.Fatal("prefetch did not fill its bounded queue")
+	}
+	time.Sleep(40 * time.Millisecond)
+	if n := requests.Load(); n != 4 {
+		t.Errorf("slow reader allowed %d prefetched requests; want at most two batches", n)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("bytes=%d err=%v", len(got), err)
+	}
+	if stats := r.statsSnapshot(); stats.PeakSegmentJobs > 4 || stats.PeakActiveSegments > 2 {
+		t.Fatal("prefetch exceeded its resource bounds", stats)
 	}
 }

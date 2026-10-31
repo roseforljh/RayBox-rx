@@ -18,8 +18,8 @@ const (
 	rxParallelLaunchInterval = 3 * time.Millisecond
 )
 
-// rxParallel runs at most N active jobs and keeps at most window/S fixed-size
-// jobs, including completed unread jobs.
+// rxParallel runs at most N active jobs and retains at most two batches of
+// jobs, also bounded by window/S, including completed unread jobs.
 // All state is guarded by r.mu; network I/O never holds that lock.
 type rxParallel struct {
 	r                     *rxDownlink
@@ -46,7 +46,7 @@ type rxSegmentJob struct {
 }
 
 func newRXParallel(r *rxDownlink, response rxResponse) *rxParallel {
-	j := &rxSegmentJob{start: 0, end: response.body.segmentEnd, data: make([]byte, int(r.segment)), body: response.body, lastProgress: time.Now()}
+	j := &rxSegmentJob{start: 0, end: response.body.segmentEnd, data: make([]byte, int(response.body.segmentEnd)), body: response.body, lastProgress: time.Now()}
 	p := &rxParallel{r: r, jobs: []*rxSegmentJob{j}, changed: make(chan struct{}), stopped: make(chan struct{}), next: j.end, produced: response.end, done: response.done, final: response.end}
 	r.current = nil
 	return p
@@ -97,10 +97,11 @@ func (p *rxParallel) reserveLaunchLocked(minDelay time.Duration, head bool) time
 	return now
 }
 
-// schedule keeps at most N GETs active but lets completed jobs queue up to the
-// replay window, so one frozen head job does not idle every other connection.
+// schedule leaves room for active GETs behind a frozen head, without allocating
+// the entire server replay window for completed, unread client jobs.
 func (p *rxParallel) schedule() {
-	for !p.closed && p.r.terminal == nil && p.active < p.r.parallel && uint64(len(p.jobs)) < p.r.window/p.r.segment {
+	maxJobs := min(p.r.window/p.r.segment, 2*p.r.parallel)
+	for !p.closed && p.r.terminal == nil && p.active < p.r.parallel && uint64(len(p.jobs)) < maxJobs {
 		if (p.done && p.next >= p.final) || p.next > p.produced {
 			return
 		}
@@ -114,7 +115,7 @@ func (p *rxParallel) schedule() {
 		if p.done {
 			end = min(end, p.final)
 		}
-		j := &rxSegmentJob{start: p.next, end: end, data: make([]byte, int(p.r.segment)), lastProgress: time.Now(), launchAt: p.reserveLaunchLocked(0, len(p.jobs) == 0)}
+		j := &rxSegmentJob{start: p.next, end: end, data: make([]byte, int(end-p.next)), lastProgress: time.Now(), launchAt: p.reserveLaunchLocked(0, len(p.jobs) == 0)}
 		p.jobs = append(p.jobs, j)
 		p.next = end
 		p.active++
@@ -157,6 +158,7 @@ func (p *rxParallel) run(j *rxSegmentJob, opened bool) {
 		r.mu.Lock()
 		p.active--
 		if p.closed && p.active == 0 {
+			p.jobs = nil
 			close(p.stopped)
 		}
 		j.finished = true
@@ -451,6 +453,7 @@ func (p *rxParallel) close() {
 	if !p.closed {
 		p.closed = true
 		if p.active == 0 {
+			p.jobs = nil
 			close(p.stopped)
 		}
 		for _, j := range p.jobs {
