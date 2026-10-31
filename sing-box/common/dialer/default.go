@@ -200,6 +200,10 @@ func NewDefault(ctx context.Context, options option.DialerOptions) (*DefaultDial
 		udpDialer4 = dialer
 		udpAddr4   string
 	)
+	// The callback is TCP-only; leave UDP sockets and listeners unchanged.
+	if options.TCPControl != nil {
+		dialer4.Control = control.Append(dialer4.Control, options.TCPControl)
+	}
 	if options.Inet4BindAddress != nil {
 		bindAddr := options.Inet4BindAddress.Build(netip.IPv4Unspecified())
 		dialer4.LocalAddr = &net.TCPAddr{IP: bindAddr.AsSlice()}
@@ -214,6 +218,9 @@ func NewDefault(ctx context.Context, options option.DialerOptions) (*DefaultDial
 		udpDialer6 = dialer
 		udpAddr6   string
 	)
+	if options.TCPControl != nil {
+		dialer6.Control = control.Append(dialer6.Control, options.TCPControl)
+	}
 	if options.Inet6BindAddress != nil {
 		bindAddr := options.Inet6BindAddress.Build(netip.IPv6Unspecified())
 		dialer6.LocalAddr = &net.TCPAddr{IP: bindAddr.AsSlice()}

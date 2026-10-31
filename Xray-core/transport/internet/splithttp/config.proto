@@ -44,6 +44,20 @@ message RXConfig {
   string authKey = 16;
 }
 
+// Client-only TCP urgent-data strategy. Ordinary XHTTP is the primary path.
+message OOBConfig {
+  bool enabled = 1;
+  repeated int32 positions = 2;
+  int32 delayMs = 3;
+  int32 maxAttempts = 4;
+  int32 attemptTimeoutMs = 5;
+  repeated string addresses = 6;
+  int32 tcpMaxSeg = 7;
+  // Explicit alternate transport for the same proxy account, before user data.
+  xray.transport.internet.StreamConfig fallbackSettings = 8;
+  repeated string httpVersions = 9;
+}
+
 message Config {
   string host = 1;
   string path = 2;
@@ -75,4 +89,5 @@ message Config {
   string sessionIDTable = 28;
   RangeConfig sessionIDLength = 29;
   RXConfig rx = 30;
+  OOBConfig oob = 31;
 }

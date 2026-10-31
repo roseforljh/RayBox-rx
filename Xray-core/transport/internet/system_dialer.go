@@ -155,10 +155,18 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 			if sockopt != nil {
 				var sockErr, controlErr error
 				controlErr = c.Control(func(fd uintptr) {
+					if sockopt.TcpMaxSeg > 0 && isTCPSocket(network) {
+						if sockErr = SetTCPMaxSegment(fd, int(sockopt.TcpMaxSeg)); sockErr != nil {
+							return
+						}
+					}
 					if sockErr = applyOutboundSocketOptions(network, address, fd, sockopt); sockErr != nil {
 						errors.LogInfoInner(ctx, sockErr, "failed to apply socket options")
 					}
 				})
+				if sockopt.TcpMaxSeg > 0 && sockErr != nil {
+					return sockErr
+				}
 				if _, ok := sockErr.(*BindError); ok {
 					return sockErr
 				}

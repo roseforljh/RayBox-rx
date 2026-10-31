@@ -127,6 +127,14 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		spread = newRXSpread(rx.GetSpreadAddresses())
 	}
 	dialContext := func(ctxInner context.Context) (net.Conn, error) {
+		if o := transportConfig.GetOob(); o.GetEnabled() {
+			var cancel context.CancelFunc
+			ctxInner, cancel = context.WithTimeout(ctxInner, time.Duration(o.AttemptTimeoutMs)*time.Millisecond)
+			defer cancel()
+		}
+		if budget, ok := ctxInner.Value(oobDialBudgetKey{}).(*atomic.Int32); ok && budget.Add(1) > 1 {
+			return nil, fmt.Errorf("OOB startup TCP attempt budget exhausted")
+		}
 		started := time.Now()
 		var conn net.Conn
 		var err error
@@ -151,6 +159,9 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 			failed()
 			return nil, err
 		}
+		if o := transportConfig.GetOob(); o.GetEnabled() {
+			conn = &oobConn{Conn: conn, ctx: ctxInner, position: int(o.Positions[0]), delay: time.Duration(o.DelayMs) * time.Millisecond}
+		}
 
 		var socket *rxSocket
 		if transportConfig.GetRx().GetEnabled() && transportConfig.GetRx().GetMaxResponseBytes() != 0 {
@@ -173,7 +184,7 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 			} else {
 				conn = tls.Client(conn, gotlsConfig)
 			}
-			if fingerprint != nil || transportConfig.GetRx().GetEnabled() {
+			if fingerprint != nil || transportConfig.GetRx().GetEnabled() || transportConfig.GetOob().GetEnabled() {
 				handshakeStarted := time.Now()
 				if u, ok := conn.(*tls.UConn); ok {
 					err = u.HTTPHandshakeContext(ctxInner, gotlsConfig.NextProtos[0])
@@ -341,6 +352,9 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		uploadRawPool:  &sync.Pool{},
 		dialUploadConn: dialContext,
 	}
+	if transportConfig.GetOob().GetEnabled() {
+		client.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
 
 	return client
 }
@@ -350,6 +364,18 @@ func init() {
 }
 
 func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
+	config := streamSettings.ProtocolSettings.(*Config)
+	options, err := config.NormalizeOOB()
+	if err != nil {
+		return nil, err
+	}
+	if options != nil {
+		return dialOOB(ctx, dest, streamSettings, options)
+	}
+	return dialXHTTP(ctx, dest, streamSettings)
+}
+
+func dialXHTTP(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
 	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
 	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
 

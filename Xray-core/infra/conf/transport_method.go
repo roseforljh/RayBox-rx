@@ -264,6 +264,7 @@ func (c *TCPConfig) Build() (proto.Message, error) {
 }
 
 type SplitHTTPConfig struct {
+	OOB                  *OOBConfig        `json:"oob"`
 	RX                   *RXConfig         `json:"rx"`
 	Host                 string            `json:"host"`
 	Path                 string            `json:"path"`
@@ -295,6 +296,18 @@ type SplitHTTPConfig struct {
 	Xmux                 XmuxConfig        `json:"xmux"`
 	DownloadSettings     *StreamConfig     `json:"downloadSettings"`
 	Extra                json.RawMessage   `json:"extra"`
+}
+
+type OOBConfig struct {
+	Enabled          bool          `json:"enabled"`
+	Positions        []int32       `json:"positions"`
+	DelayMs          int32         `json:"delayMs"`
+	MaxAttempts      int32         `json:"maxAttempts"`
+	AttemptTimeoutMs int32         `json:"attemptTimeoutMs"`
+	Addresses        []string      `json:"addresses"`
+	TCPMaxSeg        int32         `json:"tcpMaxSeg"`
+	FallbackSettings *StreamConfig `json:"fallbackSettings"`
+	HTTPVersions     []string      `json:"httpVersions"`
 }
 
 type RXConfig struct {
@@ -545,6 +558,20 @@ func (c *SplitHTTPConfig) Build() (proto.Message, error) {
 			SpreadAddresses: r.SpreadAddresses,
 		}
 		if _, err := config.NormalizeRX(); err != nil {
+			return nil, err
+		}
+	}
+	if o := c.OOB; o != nil {
+		config.Oob = &splithttp.OOBConfig{Enabled: o.Enabled, Positions: o.Positions, DelayMs: o.DelayMs,
+			MaxAttempts: o.MaxAttempts, AttemptTimeoutMs: o.AttemptTimeoutMs, Addresses: o.Addresses, TcpMaxSeg: o.TCPMaxSeg, HttpVersions: o.HTTPVersions}
+		if o.FallbackSettings != nil {
+			var err error
+			config.Oob.FallbackSettings, err = o.FallbackSettings.Build()
+			if err != nil {
+				return nil, errors.New("failed to build OOB fallbackSettings").Base(err)
+			}
+		}
+		if _, err := config.NormalizeOOB(); err != nil {
 			return nil, err
 		}
 	}

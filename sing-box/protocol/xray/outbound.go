@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -18,6 +20,7 @@ import (
 	"github.com/sagernet/sing/common/bufio/deadline"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/xtls/xray-core/app/proxyman"
 	xbuf "github.com/xtls/xray-core/common/buf"
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/core"
@@ -35,7 +38,7 @@ import (
 	_ "github.com/xtls/xray-core/transport/internet/grpc"
 	_ "github.com/xtls/xray-core/transport/internet/httpupgrade"
 	_ "github.com/xtls/xray-core/transport/internet/reality"
-	_ "github.com/xtls/xray-core/transport/internet/splithttp"
+	"github.com/xtls/xray-core/transport/internet/splithttp"
 	_ "github.com/xtls/xray-core/transport/internet/tagged/taggedimpl"
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 	_ "github.com/xtls/xray-core/transport/internet/tls"
@@ -126,6 +129,9 @@ func NewOutbound(ctx context.Context, _ adapter.Router, _ log.ContextLogger, tag
 	if err != nil {
 		return nil, fmt.Errorf("invalid Xray outbound: %w", err)
 	}
+	if err := applyOOBDialerOptions(config, &options.DialerOptions); err != nil {
+		return nil, err
+	}
 	protectedDialer, err := dialer.New(ctx, options.DialerOptions, true)
 	if err != nil {
 		return nil, err
@@ -134,6 +140,51 @@ func NewOutbound(ctx context.Context, _ adapter.Router, _ log.ContextLogger, tag
 		Adapter: outbound.NewAdapterWithDialerOptions("xray", tag, []string{N.NetworkTCP, N.NetworkUDP}, options.DialerOptions),
 		ctx:     ctx, dialer: protectedDialer, config: config,
 	}, nil
+}
+
+func applyOOBDialerOptions(config *core.Config, options *option.DialerOptions) error {
+	sender, err := config.Outbound[0].SenderSettings.GetInstance()
+	if err != nil {
+		return err
+	}
+	stream := sender.(*proxyman.SenderConfig).StreamSettings
+	if stream == nil || stream.GetEffectiveProtocol() != "splithttp" {
+		return nil
+	}
+	settings, err := stream.GetEffectiveTransportSettings()
+	if err != nil {
+		return err
+	}
+	o, err := settings.(*splithttp.Config).NormalizeOOB()
+	if err != nil || o == nil {
+		return err
+	}
+	if options.Detour != "" || options.TCPFastOpen {
+		return fmt.Errorf("XHTTP OOB requires native protected TCP without detour or TCP fast open")
+	}
+	if o.FallbackSettings.GetSocketSettings() != nil {
+		return fmt.Errorf("OOB fallback sockopt is managed by sing-box")
+	}
+	if o.TcpMaxSeg < 0 {
+		return nil
+	}
+	previous := options.TCPControl
+	options.TCPControl = func(network, address string, raw syscall.RawConn) error {
+		if previous != nil {
+			if err := previous(network, address, raw); err != nil {
+				return err
+			}
+		}
+		if !strings.HasPrefix(network, "tcp") {
+			return nil
+		}
+		var socketErr error
+		if err := raw.Control(func(fd uintptr) { socketErr = internet.SetTCPMaxSegment(fd, int(o.TcpMaxSeg)) }); err != nil {
+			return err
+		}
+		return socketErr
+	}
+	return nil
 }
 
 func (o *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {

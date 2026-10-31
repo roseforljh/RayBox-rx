@@ -38,6 +38,8 @@ type DefaultDialerClient struct {
 	closed          atomic.Bool
 	httpVersion     string
 	spread          *rxSpread
+	oobOnce         sync.Once
+	oob             *oobPolicy
 	// pool of net.Conn, created using dialUploadConn
 	uploadRawPool  *sync.Pool
 	dialUploadConn func(ctxInner context.Context) (net.Conn, error)
@@ -48,6 +50,9 @@ func (c *DefaultDialerClient) IsClosed() bool {
 }
 
 func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessionId string, body io.Reader, uploadOnly bool) (wrc io.ReadCloser, remoteAddr, localAddr net.Addr, err error) {
+	if c.transportConfig.GetOob().GetEnabled() {
+		return c.openOOBStream(ctx, url, sessionId, body, uploadOnly)
+	}
 	// this is done when the TCP/UDP connection to the server was established,
 	// and we can unblock the Dial function and print correct net addresses in
 	// logs

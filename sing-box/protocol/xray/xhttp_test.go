@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,11 @@ func TestXHTTPVerifiedTLSAndReload(t *testing.T) {
 		xhttpSettings map[string]any
 	}
 	cases := []xhttpCase{{"rx-packet-up", rxPort, rxSettings}, {"rx-segments", segmentPort, segmentSettings}}
+	mss := 1440
+	if runtime.GOOS == "windows" {
+		mss = -1
+	}
+	cases = append(cases, xhttpCase{"oob-primary", autoPort, map[string]any{"host": "example.com", "path": "/xhttp-test", "mode": "packet-up", "extra": map[string]any{"oob": map[string]any{"enabled": true, "tcpMaxSeg": mss}}}})
 	for _, mode := range []string{"packet-up", "stream-up", "stream-one", "auto"} {
 		cases = append(cases, xhttpCase{mode, autoPort, map[string]any{"host": "example.com", "path": "/xhttp-test", "mode": mode}})
 	}

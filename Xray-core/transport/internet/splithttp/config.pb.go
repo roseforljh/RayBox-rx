@@ -325,6 +325,116 @@ func (x *RXConfig) GetAuthKey() string {
 	return ""
 }
 
+// Client-only TCP urgent-data strategy. Ordinary XHTTP is the primary path.
+type OOBConfig struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Enabled          bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Positions        []int32                `protobuf:"varint,2,rep,packed,name=positions,proto3" json:"positions,omitempty"`
+	DelayMs          int32                  `protobuf:"varint,3,opt,name=delayMs,proto3" json:"delayMs,omitempty"`
+	MaxAttempts      int32                  `protobuf:"varint,4,opt,name=maxAttempts,proto3" json:"maxAttempts,omitempty"`
+	AttemptTimeoutMs int32                  `protobuf:"varint,5,opt,name=attemptTimeoutMs,proto3" json:"attemptTimeoutMs,omitempty"`
+	Addresses        []string               `protobuf:"bytes,6,rep,name=addresses,proto3" json:"addresses,omitempty"`
+	TcpMaxSeg        int32                  `protobuf:"varint,7,opt,name=tcpMaxSeg,proto3" json:"tcpMaxSeg,omitempty"`
+	// Explicit alternate transport for the same proxy account, before user data.
+	FallbackSettings *internet.StreamConfig `protobuf:"bytes,8,opt,name=fallbackSettings,proto3" json:"fallbackSettings,omitempty"`
+	HttpVersions     []string               `protobuf:"bytes,9,rep,name=httpVersions,proto3" json:"httpVersions,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *OOBConfig) Reset() {
+	*x = OOBConfig{}
+	mi := &file_transport_internet_splithttp_config_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OOBConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OOBConfig) ProtoMessage() {}
+
+func (x *OOBConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_transport_internet_splithttp_config_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OOBConfig.ProtoReflect.Descriptor instead.
+func (*OOBConfig) Descriptor() ([]byte, []int) {
+	return file_transport_internet_splithttp_config_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *OOBConfig) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *OOBConfig) GetPositions() []int32 {
+	if x != nil {
+		return x.Positions
+	}
+	return nil
+}
+
+func (x *OOBConfig) GetDelayMs() int32 {
+	if x != nil {
+		return x.DelayMs
+	}
+	return 0
+}
+
+func (x *OOBConfig) GetMaxAttempts() int32 {
+	if x != nil {
+		return x.MaxAttempts
+	}
+	return 0
+}
+
+func (x *OOBConfig) GetAttemptTimeoutMs() int32 {
+	if x != nil {
+		return x.AttemptTimeoutMs
+	}
+	return 0
+}
+
+func (x *OOBConfig) GetAddresses() []string {
+	if x != nil {
+		return x.Addresses
+	}
+	return nil
+}
+
+func (x *OOBConfig) GetTcpMaxSeg() int32 {
+	if x != nil {
+		return x.TcpMaxSeg
+	}
+	return 0
+}
+
+func (x *OOBConfig) GetFallbackSettings() *internet.StreamConfig {
+	if x != nil {
+		return x.FallbackSettings
+	}
+	return nil
+}
+
+func (x *OOBConfig) GetHttpVersions() []string {
+	if x != nil {
+		return x.HttpVersions
+	}
+	return nil
+}
+
 type Config struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	Host                 string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
@@ -357,13 +467,14 @@ type Config struct {
 	SessionIDTable       string                 `protobuf:"bytes,28,opt,name=sessionIDTable,proto3" json:"sessionIDTable,omitempty"`
 	SessionIDLength      *RangeConfig           `protobuf:"bytes,29,opt,name=sessionIDLength,proto3" json:"sessionIDLength,omitempty"`
 	Rx                   *RXConfig              `protobuf:"bytes,30,opt,name=rx,proto3" json:"rx,omitempty"`
+	Oob                  *OOBConfig             `protobuf:"bytes,31,opt,name=oob,proto3" json:"oob,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Config) Reset() {
 	*x = Config{}
-	mi := &file_transport_internet_splithttp_config_proto_msgTypes[3]
+	mi := &file_transport_internet_splithttp_config_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -375,7 +486,7 @@ func (x *Config) String() string {
 func (*Config) ProtoMessage() {}
 
 func (x *Config) ProtoReflect() protoreflect.Message {
-	mi := &file_transport_internet_splithttp_config_proto_msgTypes[3]
+	mi := &file_transport_internet_splithttp_config_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -388,7 +499,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Config.ProtoReflect.Descriptor instead.
 func (*Config) Descriptor() ([]byte, []int) {
-	return file_transport_internet_splithttp_config_proto_rawDescGZIP(), []int{3}
+	return file_transport_internet_splithttp_config_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Config) GetHost() string {
@@ -601,6 +712,13 @@ func (x *Config) GetRx() *RXConfig {
 	return nil
 }
 
+func (x *Config) GetOob() *OOBConfig {
+	if x != nil {
+		return x.Oob
+	}
+	return nil
+}
+
 var File_transport_internet_splithttp_config_proto protoreflect.FileDescriptor
 
 const file_transport_internet_splithttp_config_proto_rawDesc = "" +
@@ -634,7 +752,17 @@ const file_transport_internet_splithttp_config_proto_rawDesc = "" +
 	"\vmaxSegments\x18\r \x01(\x05R\vmaxSegments\x124\n" +
 	"\x15maxConcurrentSegments\x18\x0e \x01(\x05R\x15maxConcurrentSegments\x12(\n" +
 	"\x0fspreadAddresses\x18\x0f \x03(\tR\x0fspreadAddresses\x12\x18\n" +
-	"\aauthKey\x18\x10 \x01(\tR\aauthKey\"\x89\r\n" +
+	"\aauthKey\x18\x10 \x01(\tR\aauthKey\"\xde\x02\n" +
+	"\tOOBConfig\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1c\n" +
+	"\tpositions\x18\x02 \x03(\x05R\tpositions\x12\x18\n" +
+	"\adelayMs\x18\x03 \x01(\x05R\adelayMs\x12 \n" +
+	"\vmaxAttempts\x18\x04 \x01(\x05R\vmaxAttempts\x12*\n" +
+	"\x10attemptTimeoutMs\x18\x05 \x01(\x05R\x10attemptTimeoutMs\x12\x1c\n" +
+	"\taddresses\x18\x06 \x03(\tR\taddresses\x12\x1c\n" +
+	"\ttcpMaxSeg\x18\a \x01(\x05R\ttcpMaxSeg\x12Q\n" +
+	"\x10fallbackSettings\x18\b \x01(\v2%.xray.transport.internet.StreamConfigR\x10fallbackSettings\x12\"\n" +
+	"\fhttpVersions\x18\t \x03(\tR\fhttpVersions\"\xc9\r\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x12\n" +
@@ -666,7 +794,8 @@ const file_transport_internet_splithttp_config_proto_rawDesc = "" +
 	"\x14serverMaxHeaderBytes\x18\x1b \x01(\x05R\x14serverMaxHeaderBytes\x12&\n" +
 	"\x0esessionIDTable\x18\x1c \x01(\tR\x0esessionIDTable\x12X\n" +
 	"\x0fsessionIDLength\x18\x1d \x01(\v2..xray.transport.internet.splithttp.RangeConfigR\x0fsessionIDLength\x12;\n" +
-	"\x02rx\x18\x1e \x01(\v2+.xray.transport.internet.splithttp.RXConfigR\x02rx\x1a:\n" +
+	"\x02rx\x18\x1e \x01(\v2+.xray.transport.internet.splithttp.RXConfigR\x02rx\x12>\n" +
+	"\x03oob\x18\x1f \x01(\v2,.xray.transport.internet.splithttp.OOBConfigR\x03oob\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x85\x01\n" +
@@ -684,14 +813,15 @@ func file_transport_internet_splithttp_config_proto_rawDescGZIP() []byte {
 	return file_transport_internet_splithttp_config_proto_rawDescData
 }
 
-var file_transport_internet_splithttp_config_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_transport_internet_splithttp_config_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_transport_internet_splithttp_config_proto_goTypes = []any{
 	(*RangeConfig)(nil),           // 0: xray.transport.internet.splithttp.RangeConfig
 	(*XmuxConfig)(nil),            // 1: xray.transport.internet.splithttp.XmuxConfig
 	(*RXConfig)(nil),              // 2: xray.transport.internet.splithttp.RXConfig
-	(*Config)(nil),                // 3: xray.transport.internet.splithttp.Config
-	nil,                           // 4: xray.transport.internet.splithttp.Config.HeadersEntry
-	(*internet.StreamConfig)(nil), // 5: xray.transport.internet.StreamConfig
+	(*OOBConfig)(nil),             // 3: xray.transport.internet.splithttp.OOBConfig
+	(*Config)(nil),                // 4: xray.transport.internet.splithttp.Config
+	nil,                           // 5: xray.transport.internet.splithttp.Config.HeadersEntry
+	(*internet.StreamConfig)(nil), // 6: xray.transport.internet.StreamConfig
 }
 var file_transport_internet_splithttp_config_proto_depIdxs = []int32{
 	0,  // 0: xray.transport.internet.splithttp.XmuxConfig.maxConcurrency:type_name -> xray.transport.internet.splithttp.RangeConfig
@@ -699,21 +829,23 @@ var file_transport_internet_splithttp_config_proto_depIdxs = []int32{
 	0,  // 2: xray.transport.internet.splithttp.XmuxConfig.cMaxReuseTimes:type_name -> xray.transport.internet.splithttp.RangeConfig
 	0,  // 3: xray.transport.internet.splithttp.XmuxConfig.hMaxRequestTimes:type_name -> xray.transport.internet.splithttp.RangeConfig
 	0,  // 4: xray.transport.internet.splithttp.XmuxConfig.hMaxReusableSecs:type_name -> xray.transport.internet.splithttp.RangeConfig
-	4,  // 5: xray.transport.internet.splithttp.Config.headers:type_name -> xray.transport.internet.splithttp.Config.HeadersEntry
-	0,  // 6: xray.transport.internet.splithttp.Config.xPaddingBytes:type_name -> xray.transport.internet.splithttp.RangeConfig
-	0,  // 7: xray.transport.internet.splithttp.Config.scMaxEachPostBytes:type_name -> xray.transport.internet.splithttp.RangeConfig
-	0,  // 8: xray.transport.internet.splithttp.Config.scMinPostsIntervalMs:type_name -> xray.transport.internet.splithttp.RangeConfig
-	0,  // 9: xray.transport.internet.splithttp.Config.scStreamUpServerSecs:type_name -> xray.transport.internet.splithttp.RangeConfig
-	1,  // 10: xray.transport.internet.splithttp.Config.xmux:type_name -> xray.transport.internet.splithttp.XmuxConfig
-	5,  // 11: xray.transport.internet.splithttp.Config.downloadSettings:type_name -> xray.transport.internet.StreamConfig
-	0,  // 12: xray.transport.internet.splithttp.Config.uplinkChunkSize:type_name -> xray.transport.internet.splithttp.RangeConfig
-	0,  // 13: xray.transport.internet.splithttp.Config.sessionIDLength:type_name -> xray.transport.internet.splithttp.RangeConfig
-	2,  // 14: xray.transport.internet.splithttp.Config.rx:type_name -> xray.transport.internet.splithttp.RXConfig
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	6,  // 5: xray.transport.internet.splithttp.OOBConfig.fallbackSettings:type_name -> xray.transport.internet.StreamConfig
+	5,  // 6: xray.transport.internet.splithttp.Config.headers:type_name -> xray.transport.internet.splithttp.Config.HeadersEntry
+	0,  // 7: xray.transport.internet.splithttp.Config.xPaddingBytes:type_name -> xray.transport.internet.splithttp.RangeConfig
+	0,  // 8: xray.transport.internet.splithttp.Config.scMaxEachPostBytes:type_name -> xray.transport.internet.splithttp.RangeConfig
+	0,  // 9: xray.transport.internet.splithttp.Config.scMinPostsIntervalMs:type_name -> xray.transport.internet.splithttp.RangeConfig
+	0,  // 10: xray.transport.internet.splithttp.Config.scStreamUpServerSecs:type_name -> xray.transport.internet.splithttp.RangeConfig
+	1,  // 11: xray.transport.internet.splithttp.Config.xmux:type_name -> xray.transport.internet.splithttp.XmuxConfig
+	6,  // 12: xray.transport.internet.splithttp.Config.downloadSettings:type_name -> xray.transport.internet.StreamConfig
+	0,  // 13: xray.transport.internet.splithttp.Config.uplinkChunkSize:type_name -> xray.transport.internet.splithttp.RangeConfig
+	0,  // 14: xray.transport.internet.splithttp.Config.sessionIDLength:type_name -> xray.transport.internet.splithttp.RangeConfig
+	2,  // 15: xray.transport.internet.splithttp.Config.rx:type_name -> xray.transport.internet.splithttp.RXConfig
+	3,  // 16: xray.transport.internet.splithttp.Config.oob:type_name -> xray.transport.internet.splithttp.OOBConfig
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_transport_internet_splithttp_config_proto_init() }
@@ -727,7 +859,7 @@ func file_transport_internet_splithttp_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_transport_internet_splithttp_config_proto_rawDesc), len(file_transport_internet_splithttp_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
