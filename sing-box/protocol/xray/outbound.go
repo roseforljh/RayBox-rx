@@ -70,7 +70,18 @@ func (systemDialer) Dial(ctx context.Context, _ xnet.Address, dest xnet.Destinat
 	if !ok {
 		return nil, fmt.Errorf("Xray instance has no protected sing-box dialer")
 	}
-	return value.(N.Dialer).DialContext(ctx, dest.Network.SystemString(), M.ParseSocksaddrHostPort(dest.Address.String(), uint16(dest.Port)))
+	conn, err := value.(N.Dialer).DialContext(ctx, dest.Network.SystemString(), M.ParseSocksaddrHostPort(dest.Address.String(), uint16(dest.Port)))
+	if err != nil {
+		return nil, err
+	}
+	if dest.Network == xnet.Network_UDP {
+		if _, ok := conn.(*xnet.PacketConnWrapper); !ok {
+			// Xray's QUIC transports require its packet wrapper. Keep sing-box's
+			// protected, tracked connection instead of unwrapping its socket.
+			return &xnet.PacketConnWrapper{PacketConn: bufio.NewUnbindPacketConn(conn), Dest: conn.RemoteAddr()}, nil
+		}
+	}
+	return conn, nil
 }
 
 func (systemDialer) DestIpAddress() xnet.IP { return nil }

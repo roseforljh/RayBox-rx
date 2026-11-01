@@ -30,13 +30,26 @@ go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X github.com/xtls/
 go build -trimpath -buildvcs=false -o ../artifacts/raybox-rx ./cmd/sing-box
 ```
 
-Android AAR 在 Windows PowerShell 执行：
+Android AAR 在 Windows 或 Linux 的 PowerShell 7 执行：
 
 ```powershell
 ./sing-box/build-libbox.ps1
 ```
 
-AAR 构建还需要 JDK 17、Android SDK/NDK 和可用的 Go 环境。脚本使用 gomobile v0.1.13，输出到忽略的 `artifacts/libbox/`，其中 `build.json` 记录两套源码状态和 AAR 哈希。产物不包含在源码仓库。
+AAR 构建使用 Go 1.27.3、JDK 17、Android SDK 37、NDK 28.0.13004108 和 gomobile v0.1.13。脚本固定只编译 `armeabi-v7a` 和 `arm64-v8a`，输出到忽略的 `artifacts/libbox/`。`build.json` 记录本仓库完整提交号、架构及两个 AAR 的 SHA-256。产物不包含在源码仓库。
+
+### Android 内核发布
+
+GitHub Actions 的 **Build and release RayBox Android core** 直接编译本仓库的 `sing-box/` 和 `Xray-core/`，不下载官方源码、不应用 App 仓库补丁。内核改动应先在本仓库提交并推送，然后为该提交建立 `android-<完整提交号>` 标签，再在相同提交上触发工作流：
+
+```sh
+commit=$(git rev-parse HEAD)
+git tag "android-$commit" "$commit"
+git push origin "android-$commit"
+gh workflow run android-core.yml --ref "android-$commit"
+```
+
+工作流先运行受保护拨号、XHTTP/RX 和证书测试，再构建 AAR 并保存 Actions artifact。Release 包含 `libbox.aar`、`libbox-legacy.aar` 和 `build.json`。同标签重跑可以恢复草稿，已经发布的产物保留。App 应锁定这个完整提交标签，下载这三个文件后验证来源、架构和 AAR 内容，再打包 APK；任何下载或验证失败都应终止，不能回退到旧内核。
 
 原始补丁导出工具 `sing-box/export-simplenet.ps1` 需要显式指定 `-SimpleNet`、`-XrayRepository`、`-SingBoxRepository`；后两项必须是包含原始基线提交对象的独立仓库，当前组合快照不附带那些历史对象。普通构建无需运行导出工具。
 

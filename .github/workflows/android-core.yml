@@ -1,0 +1,89 @@
+name: Build and release RayBox Android core
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: raybox-android-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  android-core:
+    name: Compile RayBox source for Android ARM32 and ARM64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: |
+            sing-box/go.sum
+            Xray-core/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '16111833'
+          packages: platform-tools
+      - name: Install Android SDK and NDK
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;28.0.13004108"
+      - name: Test protected dialer and Xray integration
+        working-directory: sing-box
+        run: go test ./common/dialer ./protocol/xray -count=1 -timeout 120s
+      - name: Test RX transport and certificate reload
+        working-directory: Xray-core
+        run: go test ./transport/internet/splithttp ./transport/internet/tls ./infra/conf -run '^(TestRX|TestXrayRX|TestCertificateReload)' -count=1 -timeout 120s
+      - name: Build repository source into Android AARs
+        shell: pwsh
+        run: ./sing-box/build-libbox.ps1
+      - name: Preserve built AARs and source manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: raybox-android-${{ github.sha }}
+          path: artifacts/libbox/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish immutable RayBox core release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "android-$env:GITHUB_SHA"
+          $files = @('libbox.aar', 'libbox-legacy.aar', 'build.json')
+          $release = gh release list --limit 100 --json tagName,isDraft | ConvertFrom-Json | Where-Object tagName -EQ $tag
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect RayBox releases' }
+          if (-not $release) {
+            gh release create $tag --verify-tag --draft --title "RayBox Android $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_SHA; Android ARM32 and ARM64."
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create release; source tag must exist before dispatch' }
+            $release = [pscustomobject]@{ isDraft = $true }
+          }
+          $assets = @(gh release view $tag --json assets --jq '.assets[].name')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing release assets' }
+          if (-not $release.isDraft) {
+            foreach ($file in $files) {
+              if ($file -notin $assets) { throw "Published release is missing $file" }
+            }
+            New-Item -ItemType Directory -Force -Path artifacts/published | Out-Null
+            gh release download $tag --pattern build.json --dir artifacts/published --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect published source manifest' }
+            $published = Get-Content artifacts/published/build.json -Raw | ConvertFrom-Json
+            if ($published.commit -ne $env:GITHUB_SHA -or $published.repository -ne $env:GITHUB_REPOSITORY) { throw 'Published release does not match this RayBox source' }
+            Write-Host "Reusing published core release $tag"
+            exit 0
+          }
+          foreach ($file in $files) {
+            gh release upload $tag "artifacts/libbox/$file" --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Cannot upload $file" }
+          }
+          gh release edit $tag --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish core release' }
