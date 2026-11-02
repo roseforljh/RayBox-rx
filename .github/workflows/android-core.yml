@@ -1,6 +1,9 @@
 name: Build and release RayBox Android core
 
 on:
+  # Every main commit gets its own core release, so an app release can always use the newest core.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -63,8 +66,8 @@ jobs:
           $release = gh release list --limit 100 --json tagName,isDraft | ConvertFrom-Json | Where-Object tagName -EQ $tag
           if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect RayBox releases' }
           if (-not $release) {
-            gh release create $tag --verify-tag --draft --title "RayBox Android $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_SHA; Android ARM32 and ARM64."
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot create release; source tag must exist before dispatch' }
+            gh release create $tag --target $env:GITHUB_SHA --draft --title "RayBox Android $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_SHA; Android ARM32 and ARM64."
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create release' }
             $release = [pscustomobject]@{ isDraft = $true }
           }
           $assets = @(gh release view $tag --json assets --jq '.assets[].name')
