@@ -90,4 +90,5 @@ message Config {
   RangeConfig sessionIDLength = 29;
   RXConfig rx = 30;
   OOBConfig oob = 31;
+  bytes h2Params = 32;
 }

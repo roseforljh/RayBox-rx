@@ -7,7 +7,7 @@ sing-box 负责 TUN、DNS、路由和受保护拨号；Xray-core 提供 Xray 协
 ## 源码目录
 
 - [`sing-box/`](sing-box/)：基于 sing-box v1.14.3，含 Xray 出站与 Android libbox 构建脚本。
-- [`Xray-core/`](Xray-core/)：基于 Xray-core v26.10.29，含 RX、TLS 修复和相关测试。
+- [`Xray-core/`](Xray-core/)：基于 Xray-core v26.10.31，含 RX、OOB、TLS 修复和相关测试。
 - [`SOURCE.md`](SOURCE.md)：源码来源、许可证与导入范围。
 - [`VALIDATION.md`](VALIDATION.md)：本次检查结果与已知间歇失败。
 - [`Xray-core/docs/xray-rx-usage.md`](Xray-core/docs/xray-rx-usage.md)：RX 使用说明。

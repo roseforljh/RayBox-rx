@@ -4,7 +4,7 @@ RayBox-rx 将两套当前源码放在同一仓库，首次导入为组合快照�
 
 | 组件 | 上游基线 | 本地导入前的HEAD |
 |---|---|---|
-| Xray-core | 官方 v26.10.29，`0afec66085a85191e9dd2a4a6646c7c9a94688d1` | 同基线，包含工作区未提交RX、TLS、WebSocket与测试改动 |
+| Xray-core | 官方 v26.10.31，`a4a3dff5b20c2faae567b742c172c7b95e75c083` | 同基线，保留RX、OOB、TLS、WebSocket与测试改动；XHTTP新增h2Params使用字段32，RX/OOB字段30/31保持兼容 |
 | sing-box | 官方 v1.14.3 源码包，SHA-256 `9a8e3712a5f611ad95f1d16874bbdcdffbd3b8eed16dae2d71ce7042a33c3386` | `f6bd1de2142b67de342374055ffc25bdbab27f96`，另含工作区集成修改 |
 
 sing-box 本地来源顺序：

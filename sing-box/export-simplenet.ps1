@@ -13,7 +13,7 @@ $SingBoxRepository = (Resolve-Path -LiteralPath $SingBoxRepository).Path
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 # The combined snapshot has no original Git objects; use source repos containing these baselines.
 foreach ($source in @(
-    @{ Path = $XrayRepository; Base = '0afec66085a85191e9dd2a4a6646c7c9a94688d1' },
+    @{ Path = $XrayRepository; Base = 'a4a3dff5b20c2faae567b742c172c7b95e75c083' },
     @{ Path = $SingBoxRepository; Base = '4e30f6b047b18f54ae757c2d2e67dc33627c74ef' }
 )) {
     & git -C $source.Path cat-file -e ($source.Base + '^{commit}')
@@ -43,7 +43,7 @@ $temp = Join-Path ([IO.Path]::GetTempPath()) ('xray-rx-export-' + [guid]::NewGui
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
     $xrayPatch = Join-Path $temp '0001-xray-rx.patch'
-    Export-Patch $XrayRepository (Join-Path $sourceRoot 'Xray-core') '0afec66085a85191e9dd2a4a6646c7c9a94688d1' @(
+    Export-Patch $XrayRepository (Join-Path $sourceRoot 'Xray-core') 'a4a3dff5b20c2faae567b742c172c7b95e75c083' @(
         'go.mod', 'go.sum', ':(glob)infra/conf/**/*.go',
         ':(glob)transport/internet/**/*.go', ':(glob)transport/internet/**/*.proto',
         ':(exclude,glob)**/*_test.go'

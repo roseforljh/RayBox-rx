@@ -67,7 +67,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55
 	github.com/vishvananda/netns v0.0.5
-	github.com/xtls/xray-core v1.260327.1-0.20261029083850-0afec66085a8
+	github.com/xtls/xray-core v1.260331.0-0.20261031132019-a4a3dff5b20c
 	go.uber.org/zap v1.27.1
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/crypto v0.58.0
@@ -80,7 +80,7 @@ require (
 	golang.org/x/text v0.43.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 	google.golang.org/grpc v1.84.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 	howett.net/plist v1.0.1
 )
 
