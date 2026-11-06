@@ -42,6 +42,8 @@ const (
 
 var _ StartedServiceServer = (*StartedService)(nil)
 
+const kunBoxCommandHeartbeatInterval = 5 * time.Second
+
 type StartedService struct {
 	ctx context.Context
 	// platform adapter.PlatformInterface
@@ -404,12 +406,18 @@ func (s *StartedService) SubscribeLog(empty *emptypb.Empty, server grpc.ServerSt
 	if err != nil {
 		return err
 	}
+	heartbeat := time.NewTicker(kunBoxCommandHeartbeatInterval)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-s.ctx.Done():
 			return s.ctx.Err()
 		case <-server.Context().Done():
 			return server.Context().Err()
+		case <-heartbeat.C:
+			if err = server.Send(&Log{}); err != nil {
+				return err
+			}
 		case message := <-subscription:
 			var rawMessage Log
 			if message == nil {
@@ -527,24 +535,22 @@ func (s *StartedService) SubscribeGroups(empty *emptypb.Empty, server grpc.Serve
 		return err
 	}
 	defer s.serviceStatusObserver.UnSubscribe(statusSubscription)
+	heartbeat := time.NewTicker(kunBoxCommandHeartbeatInterval)
+	defer heartbeat.Stop()
+	if err = s.sendGroups(server); err != nil {
+		return err
+	}
 	var lastSendTime time.Time
+	lastSendTime = time.Now()
 	for {
-		s.serviceAccess.RLock()
-		var groups *Groups
-		if s.serviceStatus.Status == ServiceStatus_STARTED {
-			groups = s.readGroups()
-		} else {
-			groups = &Groups{}
-		}
-		s.serviceAccess.RUnlock()
-		err = server.Send(groups)
-		if err != nil {
-			return err
-		}
-		lastSendTime = time.Now()
 		select {
 		case <-subscription:
 		case <-statusSubscription:
+		case <-heartbeat.C:
+			if err = server.Send(&Groups{}); err != nil {
+				return err
+			}
+			continue
 		case <-s.ctx.Done():
 			return s.ctx.Err()
 		case <-server.Context().Done():
@@ -555,24 +561,23 @@ func (s *StartedService) SubscribeGroups(empty *emptypb.Empty, server grpc.Serve
 			return nil
 		}
 		throttleDelay := urlTestPushMinInterval - time.Since(lastSendTime)
-		if throttleDelay <= 0 {
-			continue
-		}
-		throttleTimer := time.NewTimer(throttleDelay)
-		select {
-		case <-throttleTimer.C:
-		case <-s.ctx.Done():
-			throttleTimer.Stop()
-			return s.ctx.Err()
-		case <-server.Context().Done():
-			throttleTimer.Stop()
-			return server.Context().Err()
-		case <-done:
-			throttleTimer.Stop()
-			return nil
-		case <-statusDone:
-			throttleTimer.Stop()
-			return nil
+		if throttleDelay > 0 {
+			throttleTimer := time.NewTimer(throttleDelay)
+			select {
+			case <-throttleTimer.C:
+			case <-s.ctx.Done():
+				throttleTimer.Stop()
+				return s.ctx.Err()
+			case <-server.Context().Done():
+				throttleTimer.Stop()
+				return server.Context().Err()
+			case <-done:
+				throttleTimer.Stop()
+				return nil
+			case <-statusDone:
+				throttleTimer.Stop()
+				return nil
+			}
 		}
 		select {
 		case <-subscription:
@@ -582,7 +587,23 @@ func (s *StartedService) SubscribeGroups(empty *emptypb.Empty, server grpc.Serve
 		case <-statusSubscription:
 		default:
 		}
+		if err = s.sendGroups(server); err != nil {
+			return err
+		}
+		lastSendTime = time.Now()
 	}
+}
+
+func (s *StartedService) sendGroups(server grpc.ServerStreamingServer[Groups]) error {
+	s.serviceAccess.RLock()
+	var groups *Groups
+	if s.serviceStatus.Status == ServiceStatus_STARTED && s.instance != nil {
+		groups = s.readGroups()
+	} else {
+		groups = &Groups{}
+	}
+	s.serviceAccess.RUnlock()
+	return server.Send(groups)
 }
 
 func (s *StartedService) readGroups() *Groups {
@@ -859,9 +880,6 @@ func (s *StartedService) SubscribeConnections(request *SubscribeConnectionsReque
 
 		case <-ticker.C:
 			protoEvents := s.buildTrafficUpdates(trafficManager, connectionSnapshots)
-			if len(protoEvents) == 0 {
-				continue
-			}
 			err = server.Send(&ConnectionEvents{Events: protoEvents})
 			if err != nil {
 				return err

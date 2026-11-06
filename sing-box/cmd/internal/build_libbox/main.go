@@ -58,15 +58,13 @@ func init() {
 	sharedFlags = append(sharedFlags, "-buildvcs=false")
 	currentTag, err := build_shared.ReadTag()
 	if err != nil {
-		currentTag = "unknown"
+		log.Fatal(E.Cause(err, "read RayBox build tag"))
 	}
 	sharedFlags = append(sharedFlags, "-ldflags", build_shared.LinkerFlags(currentTag, false))
 	debugFlags = append(debugFlags, "-ldflags", build_shared.LinkerFlags(currentTag, true))
 
 	sharedTags = append(sharedTags, "with_gvisor", "with_quic", "with_wireguard", "with_utls", "with_naive_outbound", "with_clash_api", "with_usbip", "with_openvpn", "with_openconnect", "badlinkname", "tfogo_checklinkname0")
 	darwinTags = append(darwinTags, "with_dhcp", "grpcnotrace")
-	// memcTags = append(memcTags, "with_tailscale")
-	sharedTags = append(sharedTags, "with_tailscale", "ts_omit_logtail", "ts_omit_ssh", "ts_omit_drive", "ts_omit_taildrop", "ts_omit_webclient", "ts_omit_doctor", "ts_omit_capture", "ts_omit_kube", "ts_omit_aws", "ts_omit_synology", "ts_omit_bird")
 	notMemcTags = append(notMemcTags, "with_low_memory")
 	debugTags = append(debugTags, "debug")
 }
@@ -144,16 +142,6 @@ func buildAndroidVariant(config AndroidBuildConfig, bindTarget string) {
 	err := command.Run()
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	copyPath := filepath.Join("..", "sing-box-for-android", "app", "libs")
-	if rw.IsDir(copyPath) {
-		copyPath, _ = filepath.Abs(copyPath)
-		err = rw.CopyFile(config.OutputName, filepath.Join(copyPath, config.OutputName))
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Info("copied ", config.OutputName, " to ", copyPath)
 	}
 }
 

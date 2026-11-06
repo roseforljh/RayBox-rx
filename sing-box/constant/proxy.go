@@ -50,6 +50,17 @@ const (
 	TypeURLTest  = "urltest"
 )
 
+func IsRemoteProxyType(proxyType string) bool {
+	switch proxyType {
+	case TypeSOCKS, TypeHTTP, TypeShadowsocks, TypeVMess, TypeTrojan, TypeNaive,
+		TypeHysteria, TypeTor, TypeSSH, TypeShadowTLS, TypeAnyTLS, TypeShadowsocksR,
+		TypeVLESS, TypeTUIC, TypeHysteria2, "xray":
+		return true
+	default:
+		return false
+	}
+}
+
 func ProxyDisplayName(proxyType string) string {
 	switch proxyType {
 	case TypeTun:

@@ -212,6 +212,7 @@ func (s *ServerEndpoint) Start(stage adapter.StartStage, scope *adapter.Scope) e
 					Logger:           s.logger,
 					Network:          M.NetworkFromNetAddr(N.NetworkUDP, listenAddress),
 					Control:          listenConfig.Control,
+					ReserveSocket:    dialer.ReservePhysicalSocket,
 					InterfaceFinder:  networkManager.InterfaceFinder(),
 					InterfaceMonitor: networkManager.InterfaceMonitor(),
 					ExcludeInterface: s.options.Name,

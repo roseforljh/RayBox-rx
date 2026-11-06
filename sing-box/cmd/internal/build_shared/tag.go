@@ -1,44 +1,72 @@
 package build_shared
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/sagernet/sing-box/common/badversion"
-	"github.com/sagernet/sing/common"
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/shell"
 )
 
-func ReadTag() (string, error) {
-	currentTag, err := shell.Exec("git", "describe", "--tags").ReadOutput()
+var stableVersionTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+var sourceBaseline = regexp.MustCompile(`(?m)^\| sing-box \| 官方 (v[0-9]+\.[0-9]+\.[0-9]+) 源码包，SHA-256 `)
+
+func readBaseTag() (string, bool, error) {
+	tag, err := shell.Exec("git", "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0").ReadOutput()
+	if err == nil {
+		if !stableVersionTag.MatchString(tag) {
+			return "", false, fmt.Errorf("invalid sing-box version tag: %s", tag)
+		}
+		exact, exactErr := shell.Exec("git", "describe", "--tags", "--exact-match", "--match", tag).ReadOutput()
+		return strings.TrimPrefix(tag, "v"), exactErr == nil && exact == tag, nil
+	}
+	root, err := shell.Exec("git", "rev-parse", "--show-toplevel").ReadOutput()
 	if err != nil {
-		return currentTag, err
+		return "", false, err
 	}
-	currentTagRev, _ := shell.Exec("git", "describe", "--tags", "--abbrev=0").ReadOutput()
-	if currentTagRev == currentTag {
-		return strings.TrimPrefix(currentTag, "v"), nil
+	data, err := os.ReadFile(filepath.Join(root, "SOURCE.md"))
+	if err != nil {
+		return "", false, fmt.Errorf("sing-box baseline unavailable: %w", err)
 	}
-	if strings.HasPrefix(currentTagRev, "android-") {
-		return currentTag, nil
+	matches := sourceBaseline.FindSubmatch(data)
+	if len(matches) != 2 || !stableVersionTag.Match(matches[1]) {
+		return "", false, fmt.Errorf("sing-box baseline missing or invalid in SOURCE.md")
 	}
-	shortCommit, _ := shell.Exec("git", "rev-parse", "--short", "HEAD").ReadOutput()
-	version := badversion.Parse(strings.TrimPrefix(currentTagRev, "v"))
-	return version.String() + "-" + shortCommit, nil
+	return strings.TrimPrefix(string(matches[1]), "v"), false, nil
+}
+
+func ReadTag() (string, error) {
+	base, exact, err := readBaseTag()
+	if err != nil || exact {
+		return base, err
+	}
+	commit, err := shell.Exec("git", "rev-parse", "--short=12", "HEAD").ReadOutput()
+	if err != nil {
+		return "", err
+	}
+	return base + "-" + commit, nil
 }
 
 func ReadTagVersionRev() (badversion.Version, error) {
-	currentTagRev := common.Must1(shell.Exec("git", "describe", "--tags", "--abbrev=0").ReadOutput())
-	return badversion.Parse(strings.TrimPrefix(currentTagRev, "v")), nil
+	base, _, err := readBaseTag()
+	if err != nil {
+		return badversion.Version{}, err
+	}
+	return badversion.Parse(base), nil
 }
 
 func ReadTagVersion() (badversion.Version, error) {
-	currentTag := common.Must1(shell.Exec("git", "describe", "--tags").ReadOutput())
-	currentTagRev := common.Must1(shell.Exec("git", "describe", "--tags", "--abbrev=0").ReadOutput())
-	version := badversion.Parse(strings.TrimPrefix(currentTagRev, "v"))
-	if currentTagRev != currentTag {
-		if version.PreReleaseIdentifier == "" {
-			version.Patch++
-		}
+	base, exact, err := readBaseTag()
+	if err != nil {
+		return badversion.Version{}, err
+	}
+	version := badversion.Parse(base)
+	if !exact && version.PreReleaseIdentifier == "" {
+		version.Patch++
 	}
 	return version, nil
 }

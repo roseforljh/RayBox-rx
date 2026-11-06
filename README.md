@@ -36,7 +36,7 @@ Android AAR 在 Windows 或 Linux 的 PowerShell 7 执行：
 ./sing-box/build-libbox.ps1
 ```
 
-AAR 构建使用 Go 1.27.3、JDK 17、Android SDK 37、NDK 28.0.13004108 和 gomobile v0.1.13。脚本固定只编译 `armeabi-v7a` 和 `arm64-v8a`，输出到忽略的 `artifacts/libbox/`。`build.json` 记录本仓库完整提交号、架构及两个 AAR 的 SHA-256。产物不包含在源码仓库。
+AAR 构建使用 Go 1.27.3、JDK 17、Android SDK 37、NDK 29.0.14206865 和 gomobile v0.1.13。标准与 legacy 均编译 `armeabi-v7a`、`arm64-v8a`、`386` 和 `amd64` 四个 ABI；候选输出到 `artifacts/libbox-candidate/`，正式输出到 `artifacts/libbox/`。`build.json` 记录本仓库完整提交号、源码摘要、架构及两个 AAR 的 SHA-256。产物不包含在源码仓库。
 
 ### Android 内核发布
 
@@ -46,10 +46,35 @@ GitHub Actions 的 **Build and release RayBox Android core** 直接编译本仓�
 commit=$(git rev-parse HEAD)
 git tag "android-$commit" "$commit"
 git push origin "android-$commit"
-gh workflow run android-core.yml --ref "android-$commit"
+gh workflow run android-core.yml --ref "android-$commit" -f publish=true
 ```
 
-工作流先运行受保护拨号、XHTTP/RX 和证书测试，再构建 AAR 并保存 Actions artifact。Release 包含 `libbox.aar`、`libbox-legacy.aar` 和 `build.json`。同标签重跑可以恢复草稿，已经发布的产物保留。App 应锁定这个完整提交标签，下载这三个文件后验证来源、架构和 AAR 内容，再打包 APK；任何下载或验证失败都应终止，不能回退到旧内核。
+工作流在 push 或默认手动运行时只编译验证并保存 Actions artifact，不创建 Release；只有显式 `publish=true` 才发布。先运行受保护拨号、XHTTP/RX 和证书测试，再构建 AAR。Release 包含 `libbox.aar`、`libbox-legacy.aar` 和 `build.json`。重试保留已有资产并检查实际内容，内容不同直接失败，不覆盖草稿或已发布文件。App 应锁定完整提交标签，下载后验证实际标签提交、来源、文件大小、SHA-256 和 AAR 内容；任何下载或验证失败都应终止，不能回退到未验证内核。
+
+### Windows 原生核心
+
+```powershell
+./sing-box/build-windows.ps1 -AllowDirty
+```
+
+PowerShell 7 构建 `sing-box/cmd/sing-box` 的 amd64 PE，不是独立 Xray server。候选写入 `artifacts/windows-candidate/`，记录完整源码摘要、双核版本、资产大小与 SHA-256；构建前后源码不一致或回环 Clash API/selector 检查失败均不提升候选。测试不启用 TUN 或系统代理，也不连接远程节点。正式构建要求干净源码，发布仍须手动 `publish=true`。
+
+### Linux 服务器内核发布
+
+GitHub Actions 的 **Build and release RayBox server core** 在每次 `main` 提交后构建独立 Xray 服务器内核，支持 Linux `amd64`、`arm64` 和 `armv7`。构建使用 Go 1.27.3、`CGO_ENABLED=0`、`GOWORK=off`，产物来自 `Xray-core/main`，不使用 Android AAR 或官方预编译核心。
+
+服务器 Release 仅在手动 `publish=true` 时创建，使用不可变标签 `server-<完整提交号>`，包含：
+
+- `xray-linux-amd64`
+- `xray-linux-arm64`
+- `xray-linux-armv7`
+- `manifest.json`
+- `SOURCE.txt`
+- `LICENSE`
+
+`manifest.json` 记录仓库、完整提交号、版本、Go 版本，以及每个架构的文件名、大小和 SHA-256。SimpleNet 消费时必须锁定具体 `server-<完整提交号>`，下载后校验 manifest、文件大小、SHA-256 和目标架构，不使用可变 `latest` 地址，也不把 GitHub Token 下发到节点。
+
+本地 Linux 三架构候选可用 `python -I tools/build_server_candidate.py --allow-dirty` 构建；输出独立 `artifacts/server-candidate/` 并检查真实 ELF、size/hash、构建前后源码摘要，不部署服务器。amd64 运行与配置检查需在 Linux/WSL 执行，交叉编译不代表运行验证。
 
 原始补丁导出工具 `sing-box/export-simplenet.ps1` 需要显式指定 `-SimpleNet`、`-XrayRepository`、`-SingBoxRepository`；后两项必须是包含原始基线提交对象的独立仓库，当前组合快照不附带那些历史对象。普通构建无需运行导出工具。
 

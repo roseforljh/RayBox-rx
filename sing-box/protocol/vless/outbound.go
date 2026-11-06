@@ -185,12 +185,11 @@ func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 
 type vlessDialer Outbound
 
-func (h *vlessDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+func (h *vlessDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (_ net.Conn, err error) {
 	ctx, metadata := adapter.ExtendContext(ctx)
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
 	var conn net.Conn
-	var err error
 	if h.transport != nil {
 		conn, err = h.transport.DialContext(ctx)
 	} else if h.tlsDialer != nil {
@@ -199,8 +198,14 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 		conn, err = h.dialer.DialContext(ctx, N.NetworkTCP, h.serverAddr)
 	}
 	if err != nil {
+		common.Close(conn)
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			common.Close(conn)
+		}
+	}()
 	switch N.NetworkName(network) {
 	case N.NetworkTCP:
 		h.logger.InfoContext(ctx, "outbound connection to ", destination)
@@ -226,13 +231,12 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 	}
 }
 
-func (h *vlessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+func (h *vlessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (_ net.PacketConn, err error) {
 	h.logger.InfoContext(ctx, "outbound packet connection to ", destination)
 	ctx, metadata := adapter.ExtendContext(ctx)
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
 	var conn net.Conn
-	var err error
 	if h.transport != nil {
 		conn, err = h.transport.DialContext(ctx)
 	} else if h.tlsDialer != nil {
@@ -244,6 +248,11 @@ func (h *vlessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr)
 		common.Close(conn)
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			common.Close(conn)
+		}
+	}()
 	if h.xudp {
 		return h.client.DialEarlyXUDPPacketConn(conn, destination)
 	} else if h.packetAddr {

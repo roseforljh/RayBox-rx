@@ -30,5 +30,6 @@ sing-box 本地来源顺序：
 - `Xray-core/LICENSE`：Mozilla Public License 2.0。
 - `sing-box/LICENSE`：GNU GPL 3.0 或更高版本，保留原附加声明。
 - 其他文件内适用的版权及许可声明继续有效。
+- `third_party/sing-tun/`：保留原 GPL 许可证；受控模块版本、模块 zip SHA-256、KunBox 原补丁 hash 与移植说明见 [`docs/raybox-unification/SING_TUN.md`](docs/raybox-unification/SING_TUN.md)。构建使用该目录，不修改 Go 模块缓存。
 
 本文件不重新许可上游文件。发行组合二进制需遵守所有适用条款并提供对应源码。

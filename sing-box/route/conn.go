@@ -30,15 +30,36 @@ import (
 
 var _ adapter.ConnectionManager = (*ConnectionManager)(nil)
 
+const (
+	maxActivePreHandshakeConnections = 1024
+	processConnectionFDStopCount     = 8192
+	processConnectionFDResumeCount   = 4096
+	processFDCheckEveryAttempts      = 32
+	processFDCheckMinInterval        = 250 * time.Millisecond
+)
+
+var (
+	errConnectionCapacity = E.New("pre-handshake connection capacity reached")
+	errProcessFDBudget    = E.New("process file descriptor safety budget reached")
+)
+
 type ConnectionManager struct {
-	logger      logger.ContextLogger
-	access      sync.Mutex
-	connections list.List[io.Closer]
+	connectionSlots            chan struct{}
+	connectionAttempts         atomic.Uint64
+	connectionRejected         atomic.Uint64
+	lastProcessFDCount         atomic.Int64
+	lastProcessFDCheckAtNanos  atomic.Int64
+	processFDBlocked           atomic.Bool
+	lastPhysicalBudgetLogNanos atomic.Int64
+	logger                     logger.ContextLogger
+	access                     sync.Mutex
+	connections                list.List[io.Closer]
 }
 
 func NewConnectionManager(logger logger.ContextLogger) *ConnectionManager {
 	return &ConnectionManager{
-		logger: logger,
+		logger:          logger,
+		connectionSlots: make(chan struct{}, maxActivePreHandshakeConnections),
 	}
 }
 
@@ -95,7 +116,17 @@ func (m *ConnectionManager) TrackPacketConn(conn net.PacketConn) net.PacketConn 
 }
 
 func (m *ConnectionManager) NewConnection(ctx context.Context, this N.Dialer, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	if applyKunBoxProxyDestinationOverride(&metadata, this) {
+		m.logger.DebugContext(ctx, "kunbox override destination: ", metadata.RouteOriginalDestination, " => ", metadata.Destination)
+	}
 	ctx = adapter.WithContext(ctx, &metadata)
+	defer m.logPhysicalBudgetSnapshot(ctx)
+	if err := m.tryAcquireConnection(); err != nil {
+		N.CloseOnHandshakeFailure(conn, onClose, err)
+		m.logConnectionRejection(ctx, this, N.NetworkTCP, metadata, err)
+		return
+	}
+	onClose = m.manageConnectionClose(onClose)
 	var (
 		remoteConn net.Conn
 		err        error
@@ -155,8 +186,50 @@ func (m *ConnectionManager) NewConnection(ctx context.Context, this N.Dialer, co
 	go m.connectionCopy(ctx, remoteConn, conn, true, &done, onClose)
 }
 
+func applyKunBoxProxyDestinationOverride(metadata *adapter.InboundContext, dialer N.Dialer) bool {
+	outbound, isOutbound := dialer.(adapter.Outbound)
+	if !isOutbound || !isKunBoxRemoteProxyOutbound(outbound) || metadata.RouteOriginalDestination.IsValid() {
+		return false
+	}
+	if metadata.Network != N.NetworkTCP || !metadata.Destination.IsIP() || !M.IsDomainName(metadata.Domain) {
+		return false
+	}
+	if metadata.Inbound != "tun-in" && metadata.Inbound != "redirect-in-v4" && metadata.Inbound != "redirect-in-v6" &&
+		!(strings.HasPrefix(metadata.Inbound, "root-lane-") &&
+			(strings.HasSuffix(metadata.Inbound, "-tcp-v4") || strings.HasSuffix(metadata.Inbound, "-tcp-v6"))) {
+		return false
+	}
+	if metadata.Destination.Port != 80 && metadata.Destination.Port != 443 {
+		return false
+	}
+	metadata.RouteOriginalDestination = metadata.Destination
+	metadata.Destination = M.Socksaddr{
+		Fqdn: metadata.Domain,
+		Port: metadata.Destination.Port,
+	}
+	metadata.DestinationAddresses = nil
+	return true
+}
+
+func isKunBoxRemoteProxyOutbound(outbound adapter.Outbound) bool {
+	if C.IsRemoteProxyType(outbound.Type()) {
+		return true
+	}
+	group, isRemoteOnlyGroup := outbound.(interface{ KunBoxRemoteOnly() bool })
+	return isRemoteOnlyGroup && group.KunBoxRemoteOnly()
+}
+
 func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dialer, conn N.PacketConn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
 	ctx = adapter.WithContext(ctx, &metadata)
+	defer m.logPhysicalBudgetSnapshot(ctx)
+	dialContext, cancelDial := newPacketDialContext(ctx, conn)
+	defer cancelDial()
+	if err := m.tryAcquireConnection(); err != nil {
+		N.CloseOnHandshakeFailure(conn, onClose, err)
+		m.logConnectionRejection(ctx, this, N.NetworkUDP, metadata, err)
+		return
+	}
+	onClose = m.manageConnectionClose(onClose)
 	var (
 		remotePacketConn   net.PacketConn
 		remoteConn         net.Conn
@@ -167,18 +240,18 @@ func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dial
 		parallelDialer, isParallelDialer := this.(dialer.ParallelInterfaceDialer)
 		if len(metadata.DestinationAddresses) > 0 {
 			if isParallelDialer {
-				remoteConn, err = dialer.DialSerialNetwork(ctx, parallelDialer, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
+				remoteConn, err = dialer.DialSerialNetwork(dialContext, parallelDialer, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
 			} else {
-				remoteConn, err = N.DialSerial(ctx, this, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses)
+				remoteConn, err = N.DialSerial(dialContext, this, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses)
 			}
 		} else if metadata.Destination.IsIP() {
 			if isParallelDialer {
-				remoteConn, err = dialer.DialSerialNetwork(ctx, parallelDialer, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
+				remoteConn, err = dialer.DialSerialNetwork(dialContext, parallelDialer, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
 			} else {
-				remoteConn, err = this.DialContext(ctx, N.NetworkUDP, metadata.Destination)
+				remoteConn, err = this.DialContext(dialContext, N.NetworkUDP, metadata.Destination)
 			}
 		} else {
-			remoteConn, err = this.DialContext(ctx, N.NetworkUDP, metadata.Destination)
+			remoteConn, err = this.DialContext(dialContext, N.NetworkUDP, metadata.Destination)
 		}
 		if err != nil {
 			var remoteString string
@@ -203,11 +276,11 @@ func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dial
 		}
 	} else {
 		if len(metadata.DestinationAddresses) > 0 {
-			remotePacketConn, destinationAddress, err = dialer.ListenSerialNetworkPacket(ctx, this, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
+			remotePacketConn, destinationAddress, err = dialer.ListenSerialNetworkPacket(dialContext, this, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
 		} else if packetDialer, withDestination := this.(dialer.PacketDialerWithDestination); withDestination {
-			remotePacketConn, destinationAddress, err = packetDialer.ListenPacketWithDestination(ctx, metadata.Destination)
+			remotePacketConn, destinationAddress, err = packetDialer.ListenPacketWithDestination(dialContext, metadata.Destination)
 		} else {
-			remotePacketConn, err = this.ListenPacket(ctx, metadata.Destination)
+			remotePacketConn, err = this.ListenPacket(dialContext, metadata.Destination)
 		}
 		if err != nil {
 			var dialerString string
@@ -224,6 +297,7 @@ func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dial
 	if err != nil {
 		conn.Close()
 		remotePacketConn.Close()
+		onClose(err)
 		m.logger.ErrorContext(ctx, "report handshake success: ", err)
 		return
 	}
@@ -270,6 +344,139 @@ func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dial
 	var done atomic.Bool
 	go m.packetConnectionCopy(ctx, conn, destination, false, &done, onClose)
 	go m.packetConnectionCopy(ctx, destination, conn, true, &done, onClose)
+}
+
+func (m *ConnectionManager) tryAcquireConnection() error {
+	if !m.processFDBudgetAvailable() {
+		return errProcessFDBudget
+	}
+	select {
+	case m.connectionSlots <- struct{}{}:
+		return nil
+	default:
+		return errConnectionCapacity
+	}
+}
+
+func (m *ConnectionManager) manageConnectionClose(onClose N.CloseHandlerFunc) N.CloseHandlerFunc {
+	var releaseOnce sync.Once
+	return func(err error) {
+		releaseOnce.Do(func() {
+			<-m.connectionSlots
+			if onClose != nil {
+				onClose(err)
+			}
+		})
+	}
+}
+
+func (m *ConnectionManager) processFDBudgetAvailable() bool {
+	blocked := m.processFDBlocked.Load()
+	attempt := m.connectionAttempts.Add(1)
+	if !blocked && attempt%processFDCheckEveryAttempts != 0 {
+		return true
+	}
+	now := time.Now().UnixNano()
+	lastCheckAt := m.lastProcessFDCheckAtNanos.Load()
+	if now-lastCheckAt < processFDCheckMinInterval.Nanoseconds() ||
+		!m.lastProcessFDCheckAtNanos.CompareAndSwap(lastCheckAt, now) {
+		return !blocked
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return !blocked
+	}
+	fdCount := len(entries)
+	m.lastProcessFDCount.Store(int64(fdCount))
+	blocked = fdCount >= processConnectionFDStopCount ||
+		(blocked && fdCount >= processConnectionFDResumeCount)
+	m.processFDBlocked.Store(blocked)
+	return !blocked
+}
+
+func (m *ConnectionManager) logConnectionRejection(
+	ctx context.Context,
+	this N.Dialer,
+	network string,
+	metadata adapter.InboundContext,
+	reason error,
+) {
+	rejected := m.connectionRejected.Add(1)
+	if rejected&(rejected-1) != 0 {
+		return
+	}
+	var outboundTag string
+	if outbound, isOutbound := this.(adapter.Outbound); isOutbound {
+		outboundTag = outbound.Tag()
+	}
+	var (
+		processUID int32
+		packages   string
+	)
+	if metadata.ProcessInfo != nil {
+		processUID = metadata.ProcessInfo.UserId
+		packages = strings.Join(metadata.ProcessInfo.AndroidPackageNames, ",")
+	}
+	m.logger.WarnContext(
+		ctx,
+		"pre-handshake connection rejected: reason=", reason,
+		" network=", network,
+		" source=", metadata.Source,
+		" destination=", metadata.Destination,
+		" protocol=", metadata.Protocol,
+		" uid=", processUID,
+		" packages=", packages,
+		" route_outbound=", metadata.Outbound,
+		" outbound=", outboundTag,
+		" active=", len(m.connectionSlots),
+		" limit=", cap(m.connectionSlots),
+		" process_fd=", m.lastProcessFDCount.Load(),
+		" rejected=", rejected,
+	)
+}
+
+func (m *ConnectionManager) logPhysicalBudgetSnapshot(ctx context.Context) {
+	now := time.Now().UnixNano()
+	lastLogAt := m.lastPhysicalBudgetLogNanos.Load()
+	if now-lastLogAt < time.Second.Nanoseconds() ||
+		!m.lastPhysicalBudgetLogNanos.CompareAndSwap(lastLogAt, now) {
+		return
+	}
+	snapshot := dialer.CurrentPhysicalBudgetSnapshot()
+	m.logger.InfoContext(
+		ctx,
+		"kunbox_physical_budget_v1 ", snapshot.String(),
+		" pending_sources=", snapshot.PendingSources(),
+	)
+}
+
+func newPacketDialContext(parent context.Context, conn N.PacketConn) (context.Context, context.CancelFunc) {
+	timeoutConn, loaded := common.Cast[canceler.PacketConn](conn)
+	if !loaded {
+		return parent, func() {}
+	}
+	dialContext, cancel := context.WithCancel(parent)
+	if timeoutConn.Timeout() <= 0 {
+		cancel()
+		return dialContext, cancel
+	}
+	go func() {
+		// Poll only during a pending dial; remove when UDPNAT exposes close notification.
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-dialContext.Done():
+				return
+			case <-ticker.C:
+				if timeoutConn.Timeout() <= 0 {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return dialContext, cancel
 }
 
 func (m *ConnectionManager) connectionCopy(ctx context.Context, source net.Conn, destination net.Conn, direction bool, done *atomic.Bool, onClose N.CloseHandlerFunc) {

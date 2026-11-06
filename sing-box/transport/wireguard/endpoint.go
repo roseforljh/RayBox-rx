@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/service/powerreport"
@@ -38,6 +39,148 @@ type Endpoint struct {
 	egressPool     *tun.UDPEgressPool
 	pause          pause.Manager
 	pauseCallback  *list.Element[pause.Callback]
+}
+
+const wireGuardPhysicalGateMarker = "kunbox_wireguard_physical_gate_v1"
+
+type budgetedWireGuardBind struct {
+	bind conn.Bind
+
+	access sync.Mutex
+	leases []*dialer.PhysicalSocketLease
+	egress bool
+}
+
+func (b *budgetedWireGuardBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	b.access.Lock()
+	defer b.access.Unlock()
+	leases, err := dialer.ReservePhysicalSockets(2)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", wireGuardPhysicalGateMarker, err)
+	}
+	receiveFunctions, actualPort, err := b.bind.Open(port)
+	if err != nil {
+		releasePhysicalSocketLeases(leases)
+		return nil, 0, err
+	}
+	socketCount := len(receiveFunctions)
+	if b.egress {
+		socketCount-- // StdNetBind adds a pool receiver, not another anchor socket.
+	}
+	if socketCount <= 0 || socketCount > len(leases) {
+		b.bind.Close()
+		releasePhysicalSocketLeases(leases)
+		return nil, 0, E.New(wireGuardPhysicalGateMarker, ": invalid receive function count: ", len(receiveFunctions))
+	}
+	releasePhysicalSocketLeases(leases[socketCount:])
+	b.leases = leases[:socketCount]
+	return receiveFunctions, actualPort, nil
+}
+
+func (b *budgetedWireGuardBind) Close() error {
+	b.access.Lock()
+	defer b.access.Unlock()
+	err := b.bind.Close()
+	releasePhysicalSocketLeases(b.leases)
+	b.leases = nil
+	return err
+}
+
+func (b *budgetedWireGuardBind) SetMark(mark uint32) error {
+	return b.bind.SetMark(mark)
+}
+
+func (b *budgetedWireGuardBind) Send(buffers [][]byte, endpoint conn.Endpoint, offset int) error {
+	return b.bind.Send(buffers, endpoint, offset)
+}
+
+func (b *budgetedWireGuardBind) ParseEndpoint(endpoint string) (conn.Endpoint, error) {
+	return b.bind.ParseEndpoint(endpoint)
+}
+
+func (b *budgetedWireGuardBind) BatchSize() int {
+	return b.bind.BatchSize()
+}
+
+func (b *budgetedWireGuardBind) SetReservedForEndpoint(destination netip.AddrPort, reserved [3]byte) {
+	b.bind.SetReservedForEndpoint(destination, reserved)
+}
+
+func releasePhysicalSocketLeases(leases []*dialer.PhysicalSocketLease) {
+	for _, lease := range leases {
+		lease.Release()
+	}
+}
+
+type budgetedWireGuardPeekBind struct {
+	*budgetedWireGuardBind
+	peek conn.PeekLookAtSocketFd
+}
+
+func (b *budgetedWireGuardPeekBind) PeekLookAtSocketFd4() (int, error) {
+	return b.peek.PeekLookAtSocketFd4()
+}
+
+func (b *budgetedWireGuardPeekBind) PeekLookAtSocketFd6() (int, error) {
+	return b.peek.PeekLookAtSocketFd6()
+}
+
+type budgetedWireGuardInterfaceBind struct {
+	*budgetedWireGuardBind
+	interfaceBind conn.BindSocketToInterface
+}
+
+func (b *budgetedWireGuardInterfaceBind) BindSocketToInterface4(interfaceIndex uint32, blackhole bool) error {
+	return b.interfaceBind.BindSocketToInterface4(interfaceIndex, blackhole)
+}
+
+func (b *budgetedWireGuardInterfaceBind) BindSocketToInterface6(interfaceIndex uint32, blackhole bool) error {
+	return b.interfaceBind.BindSocketToInterface6(interfaceIndex, blackhole)
+}
+
+type budgetedWireGuardCombinedBind struct {
+	*budgetedWireGuardBind
+	peek          conn.PeekLookAtSocketFd
+	interfaceBind conn.BindSocketToInterface
+}
+
+func (b *budgetedWireGuardCombinedBind) PeekLookAtSocketFd4() (int, error) {
+	return b.peek.PeekLookAtSocketFd4()
+}
+
+func (b *budgetedWireGuardCombinedBind) PeekLookAtSocketFd6() (int, error) {
+	return b.peek.PeekLookAtSocketFd6()
+}
+
+func (b *budgetedWireGuardCombinedBind) BindSocketToInterface4(interfaceIndex uint32, blackhole bool) error {
+	return b.interfaceBind.BindSocketToInterface4(interfaceIndex, blackhole)
+}
+
+func (b *budgetedWireGuardCombinedBind) BindSocketToInterface6(interfaceIndex uint32, blackhole bool) error {
+	return b.interfaceBind.BindSocketToInterface6(interfaceIndex, blackhole)
+}
+
+func newBudgetedWireGuardBind(bind conn.Bind, egress bool) conn.Bind {
+	base := &budgetedWireGuardBind{bind: bind, egress: egress}
+	peek, hasPeek := bind.(conn.PeekLookAtSocketFd)
+	interfaceBind, hasInterfaceBind := bind.(conn.BindSocketToInterface)
+	switch {
+	case hasPeek && hasInterfaceBind:
+		return &budgetedWireGuardCombinedBind{
+			budgetedWireGuardBind: base,
+			peek:                  peek,
+			interfaceBind:         interfaceBind,
+		}
+	case hasPeek:
+		return &budgetedWireGuardPeekBind{budgetedWireGuardBind: base, peek: peek}
+	case hasInterfaceBind:
+		return &budgetedWireGuardInterfaceBind{
+			budgetedWireGuardBind: base,
+			interfaceBind:         interfaceBind,
+		}
+	default:
+		return base
+	}
 }
 
 func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
@@ -150,6 +293,7 @@ func (e *Endpoint) Start(postStart bool) error {
 		if egressEnabled {
 			egressPoolOptions := e.options.EgressPoolOptions
 			egressPoolOptions.Control = listenerControl
+			egressPoolOptions.ReserveSocket = dialer.ReservePhysicalSocket
 			e.egressPool = tun.NewUDPEgressPool(egressPoolOptions)
 			standardBind.SetEgressProvider(e.egressPool)
 		}
@@ -168,7 +312,7 @@ func (e *Endpoint) Start(postStart bool) error {
 				})
 			}
 		}
-		bind = standardBind
+		bind = newBudgetedWireGuardBind(standardBind, egressEnabled)
 	} else {
 		var (
 			isConnect   bool

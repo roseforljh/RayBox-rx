@@ -214,3 +214,5 @@ require (
 )
 
 replace github.com/xtls/xray-core => ../Xray-core
+
+replace github.com/sagernet/sing-tun => ../third_party/sing-tun

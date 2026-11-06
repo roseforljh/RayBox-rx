@@ -3,6 +3,9 @@ package group
 import (
 	"context"
 	"net"
+	"strings"
+
+	"github.com/gofrs/uuid/v5"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -21,6 +24,40 @@ import (
 
 func RegisterSelector(registry *outbound.Registry) {
 	outbound.Register[option.SelectorOutboundOptions](registry, C.TypeSelector, NewSelector)
+}
+
+func isKunBoxEphemeralSelector(tag string) bool {
+	if !strings.HasPrefix(tag, "F:") {
+		return false
+	}
+	id := strings.TrimPrefix(tag, "F:")
+	parsed, err := uuid.FromString(id)
+	return err == nil && parsed.String() == id
+}
+
+func isKunBoxRemoteOnlyOutbound(outbound adapter.Outbound, lookup func(string) (adapter.Outbound, bool)) bool {
+	var visit func(adapter.Outbound) bool
+	visiting := make(map[string]bool)
+	visit = func(outbound adapter.Outbound) bool {
+		group, ok := outbound.(adapter.OutboundGroup)
+		if !ok {
+			return C.IsRemoteProxyType(outbound.Type())
+		}
+		tag := outbound.Tag()
+		if tag == "" || visiting[tag] || len(group.All()) == 0 {
+			return false
+		}
+		visiting[tag] = true
+		defer delete(visiting, tag)
+		for _, childTag := range group.All() {
+			child, found := lookup(childTag)
+			if !found || !visit(child) {
+				return false
+			}
+		}
+		return true
+	}
+	return visit(outbound)
 }
 
 var (
@@ -42,6 +79,7 @@ type Selector struct {
 	selected                     common.TypedValue[adapter.Outbound]
 	history                      *urltest.HistoryStorage
 	interruptGroup               *interrupt.Group
+	kunBoxRemoteOnly             bool
 	interruptExternalConnections bool
 }
 
@@ -84,8 +122,9 @@ func (s *Selector) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		}
 		s.outbounds[tag] = detour
 	}
+	s.kunBoxRemoteOnly = isKunBoxRemoteOnlyOutbound(s, s.outbound.Outbound)
 
-	if s.Tag() != "" {
+	if s.Tag() != "" && !isKunBoxEphemeralSelector(s.Tag()) {
 		cacheFile := service.FromContext[adapter.CacheFile](s.ctx)
 		if cacheFile != nil {
 			selected := cacheFile.LoadSelected(s.Tag())
@@ -128,6 +167,8 @@ func (s *Selector) References() []string {
 	return []string{s.Now()}
 }
 
+func (s *Selector) KunBoxRemoteOnly() bool { return s.kunBoxRemoteOnly }
+
 func (s *Selector) SelectOutbound(tag string) bool {
 	detour, loaded := s.outbounds[tag]
 	if !loaded {
@@ -136,7 +177,7 @@ func (s *Selector) SelectOutbound(tag string) bool {
 	if s.selected.Swap(detour) == detour {
 		return true
 	}
-	if s.Tag() != "" {
+	if s.Tag() != "" && !isKunBoxEphemeralSelector(s.Tag()) {
 		cacheFile := service.FromContext[adapter.CacheFile](s.ctx)
 		if cacheFile != nil {
 			err := cacheFile.StoreSelected(s.Tag(), tag)

@@ -282,19 +282,19 @@ func (d *DefaultDialer) DialContext(ctx context.Context, network string, address
 	}
 	if d.networkStrategy == nil {
 		conn, err := listener.ListenNetworkNamespace[net.Conn](ctx, d.netns, func() (net.Conn, error) {
-			switch N.NetworkName(network) {
-			case N.NetworkUDP:
-				if !address.IsIPv6() {
-					return d.udpDialer4.DialContext(ctx, network, address.String())
-				} else {
-					return d.udpDialer6.DialContext(ctx, network, address.String())
+			return dialPhysicalConn(ctx, func(dialContext context.Context) (net.Conn, error) {
+				switch N.NetworkName(network) {
+				case N.NetworkUDP:
+					if !address.IsIPv6() {
+						return d.udpDialer4.DialContext(dialContext, network, address.String())
+					}
+					return d.udpDialer6.DialContext(dialContext, network, address.String())
 				}
-			}
-			if !address.IsIPv6() {
-				return DialSlowContext(&d.dialer4, ctx, network, address)
-			} else {
-				return DialSlowContext(&d.dialer6, ctx, network, address)
-			}
+				if !address.IsIPv6() {
+					return DialSlowContext(&d.dialer4, dialContext, network, address)
+				}
+				return DialSlowContext(&d.dialer6, dialContext, network, address)
+			})
 		})
 		return d.trackConn(ctx, address, conn, err)
 	} else {
@@ -362,13 +362,14 @@ func (d *DefaultDialer) ListenPacket(ctx context.Context, destination M.Socksadd
 					return d.autoDetectBindFunc(network, address, conn)
 				})
 			}
-			if destination.IsIPv6() {
-				return listenConfig.ListenPacket(ctx, N.NetworkUDP, d.udpAddr6)
-			} else if destination.IsIPv4() && !destination.Addr.IsUnspecified() {
-				return listenConfig.ListenPacket(ctx, N.NetworkUDP+"4", d.udpAddr4)
-			} else {
-				return listenConfig.ListenPacket(ctx, N.NetworkUDP, d.udpAddr4)
-			}
+			return listenPhysicalPacket(ctx, func(listenContext context.Context) (net.PacketConn, error) {
+				if destination.IsIPv6() {
+					return listenConfig.ListenPacket(listenContext, N.NetworkUDP, d.udpAddr6)
+				} else if destination.IsIPv4() && !destination.Addr.IsUnspecified() {
+					return listenConfig.ListenPacket(listenContext, N.NetworkUDP+"4", d.udpAddr4)
+				}
+				return listenConfig.ListenPacket(listenContext, N.NetworkUDP, d.udpAddr4)
+			})
 		})
 		return d.trackPacketConn(ctx, destination, packetConn, err)
 	} else {
@@ -430,7 +431,7 @@ func (d *DefaultDialer) trackConn(ctx context.Context, destination M.Socksaddr, 
 	if err != nil {
 		return conn, err
 	}
-	if nativeConn, isUDPConn := conn.(*net.UDPConn); isUDPConn {
+	if nativeConn, isUDPConn := common.Cast[*net.UDPConn](conn); isUDPConn {
 		var rawConn syscall.RawConn
 		rawConn, err = nativeConn.SyscallConn()
 		if err != nil {

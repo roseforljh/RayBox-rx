@@ -8,67 +8,45 @@ import (
 )
 
 func TestReadTagInGitRepository(t *testing.T) {
-	for _, name := range []string{"version", "unprefixed-version", "android"} {
-		t.Run(name, func(t *testing.T) {
-			// Tag fixtures stay isolated from the source repository.
-			t.Chdir(t.TempDir())
-			git := func(args ...string) string {
-				t.Helper()
-				output, err := exec.Command("git", args...).CombinedOutput()
-				if err != nil {
-					t.Fatalf("git %v: %v: %s", args, err, output)
-				}
-				return strings.TrimSpace(string(output))
-			}
-			git("init", "--quiet")
-			if err := os.WriteFile("source", []byte("fixture"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			git("add", "source")
-			git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture")
-			tag := "v1.14.3"
-			expected := "1.14.3"
-			if name == "unprefixed-version" {
-				tag = expected
-			}
-			if name == "android" {
-				tag = "android-" + git("rev-parse", "HEAD")
-				expected = tag
-			}
-			git("tag", tag)
-			actual, err := ReadTag()
-			if err != nil || actual != expected {
-				t.Fatalf("exact tag: got %q, %v; want %q", actual, err, expected)
-			}
-			if name != "android" {
-				version, err := ReadTagVersionRev()
-				if err != nil || version.String() != "1.14.3" {
-					t.Fatalf("release version: %v, %v", version, err)
-				}
-				version, err = ReadTagVersion()
-				if err != nil || version.String() != "1.14.3" {
-					t.Fatalf("exact version: %v, %v", version, err)
-				}
-			}
-			git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "next")
-			expected += "-" + git("rev-parse", "--short", "HEAD")
-			if name == "android" {
-				expected = git("describe", "--tags")
-			}
-			actual, err = ReadTag()
-			if err != nil || actual != expected {
-				t.Fatalf("after tag: got %q, %v; want %q", actual, err, expected)
-			}
-			if name != "android" {
-				version, err := ReadTagVersionRev()
-				if err != nil || version.String() != "1.14.3" {
-					t.Fatalf("base version: %v, %v", version, err)
-				}
-				version, err = ReadTagVersion()
-				if err != nil || version.String() != "1.14.4" {
-					t.Fatalf("next version: %v, %v", version, err)
-				}
-			}
-		})
+	t.Chdir(t.TempDir())
+	git := func(args ...string) string {
+		t.Helper()
+		output, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	git("init", "--quiet")
+	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture")
+	git("tag", "android-"+git("rev-parse", "HEAD"))
+	if _, err := ReadTag(); err == nil {
+		t.Fatal("android release tag must not be used as the sing-box version")
+	}
+	if err := os.WriteFile("SOURCE.md", []byte("| sing-box | 官方 v1.14.3 源码包，SHA-256 `abc` | source |\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	want := "1.14.3-" + git("rev-parse", "--short=12", "HEAD")
+	if actual, err := ReadTag(); err != nil || actual != want {
+		t.Fatalf("source baseline: %q %v, want %q", actual, err, want)
+	}
+	git("tag", "v1.14.3")
+	if actual, err := ReadTag(); err != nil || actual != "1.14.3" {
+		t.Fatalf("exact tag: %q %v", actual, err)
+	}
+	if version, err := ReadTagVersion(); err != nil || version.String() != "1.14.3" {
+		t.Fatalf("exact version: %v %v", version, err)
+	}
+	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "next")
+	git("tag", "server-"+git("rev-parse", "HEAD"))
+	want = "1.14.3-" + git("rev-parse", "--short=12", "HEAD")
+	if actual, err := ReadTag(); err != nil || actual != want {
+		t.Fatalf("later release tag: %q %v, want %q", actual, err, want)
+	}
+	if version, err := ReadTagVersionRev(); err != nil || version.String() != "1.14.3" {
+		t.Fatalf("base version: %v %v", version, err)
+	}
+	if version, err := ReadTagVersion(); err != nil || version.String() != "1.14.4" {
+		t.Fatalf("next version: %v %v", version, err)
 	}
 }

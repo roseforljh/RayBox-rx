@@ -81,9 +81,9 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, E.New("Proxy Protocol is deprecated and removed in sing-box 1.6.0")
 	}
 	if defaultDialer, isDefaultDialer := common.Cast[*dialer.DefaultDialer](outbound.dialer); isDefaultDialer {
-		outbound.icmpPort = ping.NewPort(ctx, logger, func(destination netip.Addr) control.Func {
+		outbound.icmpPort = ping.NewPortWithDestinationConnector(ctx, logger, func(destination netip.Addr) control.Func {
 			return defaultDialer.DialerForICMPDestination(destination).Control
-		}, 0)
+		}, 0, connectBudgetedPingDestination)
 	}
 	return outbound, nil
 }
@@ -207,6 +207,44 @@ func (h *Outbound) DetachReturn(returnPath tun.Return) error {
 
 func (h *Outbound) WritePackets(packets [][]byte) error {
 	return h.icmpPort.WritePackets(packets)
+}
+
+type pingDestinationLifecycle interface {
+	AddCloseCallback(func())
+	Close() error
+}
+
+func connectBudgetedPingDestination(
+	ctx context.Context,
+	loggerInstance logger.ContextLogger,
+	controlFunc control.Func,
+	destination netip.Addr,
+	writer ping.PacketWriter,
+	timeout time.Duration,
+) (*ping.Destination, error) {
+	return acquireBudgetedPingDestination(ctx, func(dialContext context.Context) (*ping.Destination, error) {
+		return ping.ConnectDestination(dialContext, loggerInstance, controlFunc, destination, writer, timeout)
+	})
+}
+
+func acquireBudgetedPingDestination[T pingDestinationLifecycle](ctx context.Context, connect func(context.Context) (T, error)) (T, error) {
+	var zero T
+	dialContext, pendingLease, err := dialer.AcquirePhysicalDial(ctx)
+	if err != nil {
+		return zero, err
+	}
+	destination, err := connect(dialContext)
+	if err != nil {
+		pendingLease.Release()
+		return zero, err
+	}
+	activeLease, err := pendingLease.Promote()
+	if err != nil {
+		_ = destination.Close()
+		return zero, err
+	}
+	destination.AddCloseCallback(activeLease.Release)
+	return destination, nil
 }
 
 func (h *Outbound) DialParallel(ctx context.Context, network string, destination M.Socksaddr, destinationAddresses []netip.Addr) (net.Conn, error) {

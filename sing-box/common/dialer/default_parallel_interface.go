@@ -34,7 +34,9 @@ func (d *DefaultDialer) dialParallelInterface(ctx context.Context, dialer net.Di
 		if defaultInterface == nil || iif.Index != defaultInterface.Index {
 			perNetDialer.Control = control.Append(perNetDialer.Control, control.BindToInterface(nil, iif.Name, iif.Index))
 		}
-		conn, err := perNetDialer.DialContext(ctx, network, addr)
+		conn, err := dialPhysicalConn(ctx, func(dialContext context.Context) (net.Conn, error) {
+			return perNetDialer.DialContext(dialContext, network, addr)
+		})
 		if err != nil {
 			return nil, false, E.Cause(err, "dial ", iif.Name, " (", iif.Index, ")")
 		}
@@ -56,7 +58,9 @@ func (d *DefaultDialer) dialParallelInterface(ctx context.Context, dialer net.Di
 		if defaultInterface == nil || iif.Index != defaultInterface.Index {
 			perNetDialer.Control = control.Append(perNetDialer.Control, control.BindToInterface(nil, iif.Name, iif.Index))
 		}
-		conn, err := perNetDialer.DialContext(ctx, network, addr)
+		conn, err := dialPhysicalConn(ctx, func(dialContext context.Context) (net.Conn, error) {
+			return perNetDialer.DialContext(dialContext, network, addr)
+		})
 		if err != nil {
 			select {
 			case results <- dialResult{error: E.Cause(err, "dial ", iif.Name, " (", iif.Index, ")"), primary: primary}:
@@ -129,7 +133,9 @@ func (d *DefaultDialer) dialParallelInterfaceFastFallback(ctx context.Context, d
 		if defaultInterface == nil || iif.Index != defaultInterface.Index {
 			perNetDialer.Control = control.Append(perNetDialer.Control, control.BindToInterface(nil, iif.Name, iif.Index))
 		}
-		conn, err := perNetDialer.DialContext(ctx, network, addr)
+		conn, err := dialPhysicalConn(ctx, func(dialContext context.Context) (net.Conn, error) {
+			return perNetDialer.DialContext(dialContext, network, addr)
+		})
 		if err != nil {
 			return nil, false, E.Cause(err, "dial ", iif.Name, " (", iif.Index, ")")
 		}
@@ -152,7 +158,9 @@ func (d *DefaultDialer) dialParallelInterfaceFastFallback(ctx context.Context, d
 		if defaultInterface == nil || iif.Index != defaultInterface.Index {
 			perNetDialer.Control = control.Append(perNetDialer.Control, control.BindToInterface(nil, iif.Name, iif.Index))
 		}
-		conn, err := perNetDialer.DialContext(ctx, network, addr)
+		conn, err := dialPhysicalConn(ctx, func(dialContext context.Context) (net.Conn, error) {
+			return perNetDialer.DialContext(dialContext, network, addr)
+		})
 		if err != nil {
 			select {
 			case results <- dialResult{error: E.Cause(err, "dial ", iif.Name, " (", iif.Index, ")"), primary: primary}:
@@ -202,7 +210,9 @@ func (d *DefaultDialer) listenSerialInterfacePacket(ctx context.Context, listene
 		if defaultInterface == nil || primaryInterface.Index != defaultInterface.Index {
 			perNetListener.Control = control.Append(perNetListener.Control, control.BindToInterface(nil, primaryInterface.Name, primaryInterface.Index))
 		}
-		conn, err := perNetListener.ListenPacket(ctx, network, addr)
+		conn, err := listenPhysicalPacket(ctx, func(listenContext context.Context) (net.PacketConn, error) {
+			return perNetListener.ListenPacket(listenContext, network, addr)
+		})
 		if err == nil {
 			return conn, nil
 		}
@@ -213,7 +223,9 @@ func (d *DefaultDialer) listenSerialInterfacePacket(ctx context.Context, listene
 		if defaultInterface == nil || fallbackInterface.Index != defaultInterface.Index {
 			perNetListener.Control = control.Append(perNetListener.Control, control.BindToInterface(nil, fallbackInterface.Name, fallbackInterface.Index))
 		}
-		conn, err := perNetListener.ListenPacket(ctx, network, addr)
+		conn, err := listenPhysicalPacket(ctx, func(listenContext context.Context) (net.PacketConn, error) {
+			return perNetListener.ListenPacket(listenContext, network, addr)
+		})
 		if err == nil {
 			return conn, nil
 		}

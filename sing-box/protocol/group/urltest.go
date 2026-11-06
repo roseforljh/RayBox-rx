@@ -48,6 +48,7 @@ type URLTest struct {
 	idleTimeout                  time.Duration
 	group                        *URLTestGroup
 	checkAccess                  sync.Mutex
+	kunBoxRemoteOnly             bool
 	interruptExternalConnections bool
 }
 
@@ -87,6 +88,7 @@ func (s *URLTest) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			return err
 		}
 		s.group = group
+		s.kunBoxRemoteOnly = isKunBoxRemoteOnlyOutbound(s, s.outbound.Outbound)
 	case adapter.StartStateStarted:
 		s.group.PostStart()
 		scope.Add(s.group.Close)
@@ -205,6 +207,8 @@ func (s *URLTest) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 	ctx = interrupt.ContextWithIsExternalConnection(ctx)
 	s.connection.NewPacketConnection(ctx, s, conn, metadata, onClose)
 }
+
+func (s *URLTest) KunBoxRemoteOnly() bool { return s.kunBoxRemoteOnly }
 
 type URLTestGroup struct {
 	ctx                          context.Context
