@@ -1,6 +1,12 @@
 # 迁移过程状态
 
-## Android 正式内核冻结（2026-11-05，最新）
+## Android 正式内核规则修正（2026-11-06，最新）
+
+- 本轮范围仅为 RayBox Android 正式内核和 KunBox 测试；Windows/SimpleNet 不在本轮验收范围。
+- 上一提交曾错误纳入四个上游 Wintun DLL；它们已从提交中移除，仍保留在本机依赖目录并由嵌套 `.gitignore` 忽略。按仓库规则，正式源码提交不含二进制；未来 Windows 构建需从固定上游模块材料恢复并校验 DLL。
+- Android 正式 AAR 将从本次修正后的干净提交重新构建；旧 AAR 不沿用、不重标。
+
+## Android 正式内核冻结（2026-11-05，历史记录）
 
 - 本轮只处理 RayBox Android 正式 AAR 与 KunBox 安装测试包；用户已明确批准本地源码提交及 Android tag，不包含远端推送或 GitHub Release。
 - 已完成的三平台 dirty 候选均对应 `c8349f9ea677d56bc107b34349c4d4ebb5a5aa7e`、`sourceDigest=3d77f9554e5d4b2f95dbbca37f05717c6a75a72121e0db8a92ffa70d27b55bec`，仅保留为历史候选，不能重标为正式 AAR。
