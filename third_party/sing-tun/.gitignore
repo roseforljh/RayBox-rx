@@ -3,7 +3,6 @@
 .DS_Store
 /*.md
 !/README.md
-!internal/wintun/*/wintun.dll
 CLAUDE.md
 AGENTS.md
 /.claude/
