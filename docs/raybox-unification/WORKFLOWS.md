@@ -2,30 +2,30 @@
 
 ## 触发与权限
 
-- `push` 只执行源码验证、构建并保存 CI artifact，不进入发布 job。
-- `workflow_dispatch` 的 `publish` 默认为 `false`；只有显式传入 `true` 才进入拥有 `contents: write` 的发布 job。
-- 本文档不授权触发工作流、发布、提交或推送。
+- push `main`：构建、验证、保存 CI artifact，并进入发布 job（用户 2026-11 前确定的“推送 main 自动编译并发布”）。
+- `workflow_dispatch` 的 `publish` 默认 `false`，只构建；显式 `true` 才发布。
+- 发布 job 才有 `contents: write`。本文档不授权触发工作流、发布、提交或推送。
 
 ## 来源身份
 
-- 三个工作流都使用 `roseforljh/RayBox-rx` 的完整 40 位小写 SHA。
-- `android-$SHA`、`windows-$SHA`、`server-$SHA` 标签必须解引用到实际 commit，并与构建的 `GITHUB_SHA` 相等。
-- server 产物来源入口是同一组合提交的 `Xray-core/main`；Windows 产物是 `sing-box/cmd/sing-box` 外壳并内嵌 Xray，不能把 server 可执行文件当作 Windows 核心。
+- 三个工作流都使用 `roseforljh/RayBox-rx` 的完整 40 位小写 SHA，版本必须等于 `<VERSION>-<SHA前12位>`（读 `VERSION` 文件，不写死）。
+- 入口：Android `sdk/android`，Windows `cmd/raybox`（`raybox-windows-amd64.exe`），server `cmd/raybox-server`（`raybox-linux-{amd64,arm64,armv7}`）。三者同一提交，server 不当客户端核心。
+- `android-$SHA`、`windows-$SHA`、`server-$SHA` 标签存在时必须解引用到 `GITHUB_SHA`。草稿 Release 没有 Git 标签，以 release 的 `target_commitish == GITHUB_SHA` 确认身份；已发布 Release 必须有指向本提交的标签。
+- 只有 GitHub API 明确返回 HTTP 404 才视为“不存在”；认证、限流、网络等其他错误直接失败，不得当成不存在而新建草稿。
+- 同 tag 名出现多个 Release 直接失败。
 - manifest 的 repository、commit、版本、架构、工具链、资产 size/SHA-256、默认 RX/OOB 和 source/license 信息必须匹配真实资产。
 
 ## 不可变资产
 
 - 已存在的发布或草稿 release 不使用 `--clobber`，不覆盖已有资产。
-- 已发布 release 的全部资产必须存在且与本次构建逐字节一致；差异直接失败。
-- 同一 commit 重建时 manifest 的 `builtAt` 等构建时间字段可能变化。已存在的 manifest 保留原文件，并重新校验其身份、声明的 size/hash 与下载得到的实际资产；所有新建二进制必须与旧 release 的实际二进制逐字节一致。
-- 缺失资产只允许在草稿 release 中补传；已发布 release 缺失资产直接失败。
+- 已发布 release 的全部资产必须存在且与本次构建逐字节一致；差异直接失败，一致则复用并结束。
+- 同一 commit 重建时 manifest 的 `builtAt` 等字段可能变化。已存在的 manifest 保留原文件：已发布时校验其声明与下载资产一致；草稿时校验其声明与本次要上传的二进制一致。
+- 草稿只补传缺失资产，已有资产必须与本次构建逐字节一致；已发布 release 缺失资产直接失败。
 
 ## 最短本地检查
 
-```powershell
-Get-Content .github/workflows/android-core.yml -Raw | ConvertFrom-Yaml | Out-Null
-Get-Content .github/workflows/server-core.yml -Raw | ConvertFrom-Yaml | Out-Null
-Get-Content .github/workflows/windows-core.yml -Raw | ConvertFrom-Yaml | Out-Null
+```sh
+python -I tools/test_release_workflows.py   # 假 gh 回放：首次发布、同 SHA 重跑、部分草稿、过期草稿、API 500、草稿指向他提交
 git diff --check
 ```
 

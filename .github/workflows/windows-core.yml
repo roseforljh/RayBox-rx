@@ -25,7 +25,7 @@ env:
 
 jobs:
   windows-core:
-    name: Compile native Windows amd64 sing-box shell
+    name: Compile RayBox Windows core
     runs-on: windows-2025
     timeout-minutes: 120
     steps:
@@ -35,15 +35,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: |
-            sing-box/go.sum
-            Xray-core/go.sum
+          cache-dependency-path: go.sum
       - name: Build and verify Windows artifact
         shell: pwsh
         run: |
           if (-not (Test-Path -LiteralPath tools/check_android_artifacts.py)) { throw 'Shared source checker is missing' }
           if (-not (Test-Path -LiteralPath tools/check_windows_runtime.py)) { throw 'Windows runtime checker is missing' }
-          ./sing-box/build-windows.ps1
+          ./tools/build-windows.ps1
       - name: Verify source commit and artifact manifest
         shell: pwsh
         run: |
@@ -55,7 +53,7 @@ jobs:
           if ($manifest.dirty) { throw 'Release artifact must be built from clean source' }
           if ([string]::IsNullOrWhiteSpace($manifest.sourceDigest) -or $manifest.sourceDigestAlgorithm -ne 'sha256-git-path-kind-content-v1') { throw 'Missing source digest' }
           if ($manifest.source.url -ne "https://github.com/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA" -or
-              $manifest.source.singBoxLicense -ne 'sing-box/LICENSE' -or $manifest.source.xrayLicense -ne 'Xray-core/LICENSE') { throw 'Unexpected source provenance' }
+              $manifest.source.runtimeLicense -ne 'docs/reference/runtime/LICENSE' -or $manifest.source.protocolLicense -ne 'docs/reference/protocol/LICENSE') { throw 'Unexpected source provenance' }
           if ($manifest.goVersion -notmatch "^go version go$env:GO_VERSION ") { throw 'Unexpected Go toolchain' }
           if ($manifest.goos -ne 'windows' -or $manifest.goarch -ne 'amd64' -or $manifest.pe.machine -ne 'amd64') { throw 'Unexpected Windows architecture' }
           foreach ($asset in $manifest.assets.psobject.Properties) {
@@ -74,7 +72,7 @@ jobs:
 
   publish:
     name: Publish immutable Windows release
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     needs: windows-core
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -96,7 +94,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = "windows-$env:GITHUB_SHA"
-          $files = @('sing-box-windows-amd64.exe', 'manifest.json', 'LICENSE', 'Xray-LICENSE', 'SOURCE.txt')
+          $files = @('raybox-windows-amd64.exe', 'manifest.json', 'LICENSE', 'RayBox-Protocol-LICENSE', 'SOURCE.txt')
           $manifest = Get-Content artifacts/windows/manifest.json -Raw | ConvertFrom-Json
           if ($manifest.repository -ne $env:GITHUB_REPOSITORY -or
               $manifest.commit -ne $env:GITHUB_SHA -or $manifest.fullHead -ne $env:GITHUB_SHA -or
@@ -106,19 +104,26 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($manifest.sourceDigest) -or
               $manifest.sourceDigestAlgorithm -ne 'sha256-git-path-kind-content-v1' -or
               $manifest.source.url -ne "https://github.com/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA" -or
-              $manifest.source.singBoxLicense -ne 'sing-box/LICENSE' -or
-              $manifest.source.xrayLicense -ne 'Xray-core/LICENSE') {
+              $manifest.source.runtimeLicense -ne 'docs/reference/runtime/LICENSE' -or
+              $manifest.source.protocolLicense -ne 'docs/reference/protocol/LICENSE') {
             throw 'Built Windows artifact has invalid source provenance'
           }
-          function Resolve-TagCommit([string]$Name) {
-            $refJson = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$Name" 2>$null | Out-String
-            if ($LASTEXITCODE -ne 0 -or -not $refJson) { return $null }
-            $ref = $refJson | ConvertFrom-Json
+          function Invoke-GhJson([string[]]$Arguments, [switch]$AllowMissing) {
+            $errorFile = New-TemporaryFile
+            try {
+              $output = & gh @Arguments 2>$errorFile | Out-String
+              if ($LASTEXITCODE -eq 0) { return $(if ($output.Trim()) { $output | ConvertFrom-Json } else { $null }) }
+              $message = Get-Content -Raw -LiteralPath $errorFile
+              if ($AllowMissing -and $message -match 'HTTP 404') { return $null }
+              throw "gh $($Arguments[0..1] -join ' ') failed: $message"
+            } finally { Remove-Item -LiteralPath $errorFile -Force }
+          }
+          function Resolve-TagCommit {
+            $ref = Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag") -AllowMissing
+            if (-not $ref) { return $null }
             if ($ref.object.type -eq 'commit') { return $ref.object.sha }
-            if ($ref.object.type -ne 'tag') { throw "Tag $Name has unexpected object type $($ref.object.type)" }
-            $tagObject = gh api "repos/$env:GITHUB_REPOSITORY/git/tags/$($ref.object.sha)" --jq '.object.sha'
-            if ($LASTEXITCODE -ne 0 -or -not $tagObject) { throw "Cannot dereference tag $Name" }
-            return $tagObject.Trim()
+            if ($ref.object.type -ne 'tag') { throw "Tag $tag has unexpected object type $($ref.object.type)" }
+            return (Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/git/tags/$($ref.object.sha)")).object.sha
           }
           function Assert-Manifest([object]$Candidate, [string]$Root) {
             if ($Candidate.repository -ne $env:GITHUB_REPOSITORY -or $Candidate.commit -ne $env:GITHUB_SHA -or
@@ -126,7 +131,7 @@ jobs:
             if ([string]::IsNullOrWhiteSpace($Candidate.sourceDigest) -or
                 $Candidate.sourceDigestAlgorithm -ne 'sha256-git-path-kind-content-v1' -or
                 $Candidate.source.url -ne "https://github.com/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA" -or
-                $Candidate.source.singBoxLicense -ne 'sing-box/LICENSE' -or $Candidate.source.xrayLicense -ne 'Xray-core/LICENSE') { throw 'Existing manifest source provenance mismatch' }
+                $Candidate.source.runtimeLicense -ne 'docs/reference/runtime/LICENSE' -or $Candidate.source.protocolLicense -ne 'docs/reference/protocol/LICENSE') { throw 'Existing manifest source provenance mismatch' }
             foreach ($asset in $Candidate.assets.psobject.Properties) {
               $entry = $asset.Value
               $assetPath = Join-Path $Root $entry.file
@@ -136,41 +141,50 @@ jobs:
               if ($item.Length -ne $entry.size -or $hash -ne $entry.sha256) { throw "Manifest asset mismatch: $($entry.file)" }
             }
           }
-          $tagCommit = Resolve-TagCommit $tag
+          # Draft releases have no Git tag yet; identify them by release target.
+          $tagCommit = Resolve-TagCommit
           if ($tagCommit -and $tagCommit -ne $env:GITHUB_SHA) { throw "Tag $tag points to $tagCommit" }
-          $releaseJson = gh release view $tag --json isDraft 2>$null | Out-String
-          $releaseExists = $LASTEXITCODE -eq 0
-          if ($releaseExists) {
-            if (-not $tagCommit) { throw "Existing release $tag has no resolvable tag commit" }
-            $release = $releaseJson | ConvertFrom-Json
+          $ids = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == ""$tag"") | .id")
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot list releases' }
+          if ($ids.Count -gt 1) { throw "Multiple releases use tag $tag" }
+          $existing = @()
+          if ($ids.Count -eq 0) {
+            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Windows $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; native RayBox Windows amd64 core."
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create release draft' }
+          } else {
+            $release = Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/releases/$($ids[0])")
+            if ($release.draft -and $release.target_commitish -ne $env:GITHUB_SHA) { throw "Draft $tag targets $($release.target_commitish)" }
+            if (-not $release.draft -and $tagCommit -ne $env:GITHUB_SHA) { throw "Published release $tag has no tag at this commit" }
+            $existing = @($release.assets | ForEach-Object { $_.name })
             New-Item -ItemType Directory -Force -Path artifacts/published | Out-Null
-            gh release download $tag --dir artifacts/published
-            if ($LASTEXITCODE -ne 0) { throw "Cannot download existing release $tag" }
-            $existingManifestPath = Join-Path (Resolve-Path artifacts/published) 'manifest.json'
-            if (-not (Test-Path -LiteralPath $existingManifestPath)) { throw 'Existing release is missing manifest.json' }
-            Assert-Manifest (Get-Content $existingManifestPath -Raw | ConvertFrom-Json) (Resolve-Path artifacts/published)
+            $published = Resolve-Path artifacts/published
+            if ($existing.Count -gt 0) {
+              gh release download $tag --dir $published
+              if ($LASTEXITCODE -ne 0) { throw "Cannot download existing release $tag" }
+            }
+            if ($existing -contains 'manifest.json') {
+              # A kept draft manifest must describe the binaries uploaded now.
+              $assetRoot = $(if ($release.draft) { Resolve-Path artifacts/windows } else { $published })
+              Assert-Manifest (Get-Content (Join-Path $published 'manifest.json') -Raw | ConvertFrom-Json) $assetRoot
+            } elseif (-not $release.draft) { throw 'Existing release is missing manifest.json' }
             foreach ($file in $files) {
               if ($file -eq 'manifest.json') { continue }
-              $publishedPath = Join-Path artifacts/published $file
-              if (-not (Test-Path -LiteralPath $publishedPath)) { throw "Existing release is missing asset: $file" }
-              $builtHash = (Get-FileHash -LiteralPath (Join-Path artifacts/windows $file) -Algorithm SHA256).Hash.ToLower()
-              $publishedHash = (Get-FileHash -LiteralPath $publishedPath -Algorithm SHA256).Hash.ToLower()
-              if ($builtHash -ne $publishedHash) { throw "Existing asset differs: $file" }
+              if ($existing -notcontains $file) {
+                if (-not $release.draft) { throw "Published release is missing asset: $file" }
+                continue
+              }
+              $builtHash = (Get-FileHash -LiteralPath (Join-Path artifacts/windows $file) -Algorithm SHA256).Hash
+              if ($builtHash -ne (Get-FileHash -LiteralPath (Join-Path $published $file) -Algorithm SHA256).Hash) { throw "Existing asset differs: $file" }
             }
-            if (-not $release.isDraft) {
+            if (-not $release.draft) {
               Write-Host "Reusing published release $tag"
               exit 0
             }
-          } else {
-            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Windows $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; native Windows amd64 sing-box shell with embedded Xray outbound support."
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot create Windows release draft' }
           }
           foreach ($file in $files) {
-            $existing = Join-Path artifacts/published $file
-            if (-not (Test-Path -LiteralPath $existing)) {
-              gh release upload $tag (Join-Path artifacts/windows $file)
-              if ($LASTEXITCODE -ne 0) { throw "Cannot upload $file" }
-            }
+            if ($existing -contains $file) { continue }
+            gh release upload $tag (Join-Path artifacts/windows $file)
+            if ($LASTEXITCODE -ne 0) { throw "Cannot upload $file" }
           }
           gh release edit $tag --target $env:GITHUB_SHA --draft=false --latest=false
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish Windows core release' }
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish release' }

@@ -15,7 +15,7 @@
 ## 本次发布检查
 
 - 源码来自两套冻结的Git工作区。复制前后逐文件SHA-256和文件清单一致：Xray-core清单1203项，sing-box清单1575项。私有现场报告以脱敏摘要替代。
-- 在新的组合源码目录执行 `go test ./protocol/xray -count=1 -timeout 120s`：通过，0.320秒。工具链Go1.27.3，CGO_ENABLED=0；验证本地Xray替换和现有双内核集成。
+- 在新的组合源码目录执行标准 `protocol/session`、`protocol/streamconn` 定向回环测试；历史 `protocol/xray` 测试记录仅保留为迁移前基线，不代表当前生产入口。
 - 两个PowerShell构建/导出脚本语法检查通过。未执行AAR构建，也未运行会写入SimpleNet的补丁导出。
 - 发布文件的私密标记、测试机地址和个人绝对路径预扫无命中；未复制artifacts、认证配置、密码容器、抓包、原始现场日志或二进制。
 - 最终暂存2778个来源文件和5个项目入口文件，无嵌套Git链接，完整性核对通过。首次整仓导入的 `git diff --cached --check` 报695处空白问题，均在与来源逐字一致的既有文件中；本次改动的文档与脚本无新增空白问题，未批量格式化上游。
@@ -61,7 +61,7 @@
 本轮按用户要求处理稳定性、缓存占用和连接选择，详见 [完整报告](Xray-core/docs/xhttp-rx-stability-20261031.md)。上方旧现场结论对应其各自配置；本轮使用HTTP/80、VLESS正文认证加密和RX v2控制认证加密路径。
 
 - 修复控制探测失败拖住已知卡段恢复、取消拨号等待和迟到连接释放；回放缓存按需增长、全部ACK后释放，预取队列限为两批；共享入口健康记录并增加短暂冷却；修复Chrome指纹覆盖H1/H2协议选择。未改变协议、认证、默认配置或依赖。
-- Go1.27.3执行相关RX/TLS/ECH/ALPN定向race，通过192个测试及子测试；sing-box的 `go test ./protocol/xray -count=1 -timeout 120s` 通过。Linux amd64独立内核构建通过，源码哈希与实验产物可核对；不是全仓测试或Android实机验收。
+- Go1.27.3执行相关RX/TLS/ECH/ALPN定向race，通过192个测试及子测试；迁移前 sing-box 的 `go test ./protocol/xray -count=1 -timeout 120s` 通过。Linux amd64独立内核构建通过，源码哈希与实验产物可核对；不是全仓测试或Android实机验收。
 - 同一新版内核、同一段长64KiB/并发16的16MiB、1MiB、2MiB窗口均完整收到64MiB且SHA-256一致。UK进程峰值RSS分别73.50、39.57、43.31MiB；1MiB窗口有明显等待，当前场景优先2MiB。该差值为窗口配置比较，不是新旧代码A/B；客户端RSS没有下降。
 - 2MiB窗口持续183.323秒收到181.320MiB，源前缀、落盘前缀和流式hash一致，分段重试0；UK代理峰值40.98MiB。按预设截止结束，curl28，未完整下载1GiB。
 - 最终两端独立审计均确认实验服务、进程、句柄及监听清理完成，生产监听与PID不变；未替换生产、未构建AAR、未提交或推送。OOB原型尚未合入应用，连接成功率提升百分比、跨运营商、多用户与长期稳定性未验收。
@@ -81,7 +81,7 @@
 用户手动调用submit-push，授权分类提交并推送当前改动。RX修复与OOB接入分别提交，使用说明及交接记录单独整理。
 
 - 分组暂存的RX代码与此前通过192个定向race测试及子测试的冻结源码一致；最终Xray的Go、模块和proto源码与通过205个定向race测试及子测试、完成OOB现场验证的冻结清单一致。本次复用这些有效结果，未重复启动远端实验。
-- 本次补跑 `go test ./common/dialer ./protocol/xray -count=1 -timeout 120s` 通过，分别为0.080秒、0.347秒。修改文件的Go格式、diff空白、文档链接及已知私有值检查通过。
+- 本次补跑 `go test ./common/dialer ./protocol/session ./protocol/streamconn -count=1 -timeout 120s` 通过；修改文件的Go格式、diff空白、文档链接及已知私有值检查通过。
 - 忽略的artifacts、服务器认证配置、抓包及实验二进制没有纳入提交。本次发布源码和脱敏文档，未替换生产、构建AAR或增加手机实机验收结论。
 
 ## OOB速度质疑后的现场对照（2026-10-31 UTC）
@@ -127,5 +127,5 @@
 - Go1.27.3构建Linux amd64/arm64/armv7，ELF架构检查及三个资产的大小/SHA-256读取校验通过。amd64在WSL实际启动版本命令，并通过含OOB和RX备用的配置自检。服务端项目的版本锁和构建脚本已固定对应提交，三个二进制放入项目现有资产目录。
 - JDK17、NDK28.0.13004108与gomobile0.1.13构建标准API24及兼容API21两套AAR，每套均包含arm64-v8a、armeabi-v7a、x86、x86_64；ZIP完整性、ELF架构和输出SHA-256核对通过。标准AAR SHA-256为`0333400c60de3957d113ce537e46aa88c017696e375076a8085ef10a4651615c`，兼容AAR为`bbffb1ff3839a66f6c787905d0ecbf1cc0819f05c8c706f5f89254739eab2486`。
 - 两套AAR已复制到SimpleNet现有`third_party/sing-box-build/`，同步来源锁、补丁、构建指纹及SHA-256。`:app:verifyNativeCore :app:compileDebugKotlin --offline`通过，未做手机实机联网验收。
-- sing-box的`go test ./common/dialer ./protocol/xray -count=1 -timeout 120s`通过；服务端`raybox-server.test.ts`和`xhttp.test.ts`共5个测试、50次断言通过。沿用此前RX/OOB源码定向测试证据，没有重跑全仓或远端性能实验。
+- 标准 RayBox session 入口与 `protocol/vless` 的真实 XHTTP/TLS/UDP/reload 回环已验证；旧 `protocol/xray` 路径仅作为迁移前文档基线保留。
 - 客户端和服务端的86个既有无关改动文件逐项hash保持，不纳入本次提交。二进制、AAR、配置样本、构建日志及可复核记录放在忽略的产物目录，没有提交凭据或实验资料。

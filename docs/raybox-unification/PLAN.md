@@ -38,7 +38,7 @@ KunBox、SimpleNet、KunBoxForWindows 当前分别存在 sing-box、外置 Xray 
 - 以 RayBox 当前 sing-box/Xray 组合源码为基线，先完成 sing-box 版本与 KunBox 定制补丁的兼容性分析，再逐项移植 KunBox 补丁；不能把 `.kernel-sync-local/patches/kunbox-v1.14.4.patch` 直接整体套用。
 - 先建立唯一、可验证的源码身份链：RayBox repository、完整 commit、Android tag、server tag、Windows tag、各自 `build.json`/`manifest.json` 和资产 SHA-256 必须互相一致；修复现有 Android lock 与 release/build manifest 不一致、dispatch server 仍锁旧提交的问题后，才能进入客户端消费阶段。
 - 对已知冲突逐文件处理：`common/dialer/default.go`、`protocol/direct/outbound.go`、`protocol/group/selector.go`、`protocol/group/urltest.go`、`route/conn.go`、`transport/wireguard/endpoint.go`。每个补丁保留原行为和 RayBox Xray protected dialer 约束。
-- 为 `protocol/xray` 增加 sing-box protected dialer、Xray instance context、detour/TCP fast open/OOB 边界的单元测试；禁止使用 `context.Background()` 破坏保护链。
+- 为 `protocol/session` 增加 RayBox protected dialer、owner context、detour/TCP fast open/OOB 边界的单元测试；禁止使用 `context.Background()` 破坏保护链。
 - 以当前 Kotlin 调用核对 libbox API：保留 `CommandServer.pause/wake/resetNetwork`、CommandClient 状态/日志/连接和平台回调。不要恢复旧私有 API；同步脚本禁止的方法和实现仍保持禁止。安全补丁与 AAR API 检查通过前不替换运行核心。
 - 明确 RX/OOB 的能力边界：默认关闭，只接受客户端显式合法配置；不把普通 XHTTP 成功误标为 RX/OOB 验收。
 - 若缺失能力属于核心公共能力，先在 RayBox 补齐并补 Go 测试，再让客户端接入；不要在三个客户端复制内核逻辑。

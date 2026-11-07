@@ -14,8 +14,8 @@ REQUIRED_MARKERS = (b"pre-handshake connection rejected: reason=", b"kunbox_phys
                     b"kunbox_wireguard_physical_gate_v1", b"kunbox override destination:",
                     b"system TCP connection limit reached: active=")
 FORBIDDEN_MARKERS = (b"controlplane.tailscale.com", b"Tailscale outbound",
-                     b"github.com/sagernet/sing-box/protocol/vless/encryption", b"parseVLESSClientEncryption",
-                     *(b"experimental/libbox." + name for name in
+                     b"github.com/roseforljh/RayBox-rx/protocol/vless/encryption", b"parseVLESSClientEncryption",
+                     *(prefix + name for prefix in (b"experimental/libbox.", b"sdk/android.") for name in
                        (b"CheckNetworkRecoveryNeeded", b"CloseAllTrackedConnections", b"CloseIdleConnections",
                         b"GetConnectionCount", b"RecoverNetworkAuto", b"ResetAllConnections")))
 
@@ -126,7 +126,10 @@ def public_methods(data):
     return methods
 
 
-def inspect_aar(path, require_safety=False):
+def inspect_aar(path, require_safety=False, expected_abis=None):
+    expected_abis = set(ABIS) if expected_abis is None else set(expected_abis)
+    if not expected_abis or not expected_abis.issubset(ABIS):
+        raise ValueError("Unsupported ABI selection")
     data = path.read_bytes()
     native = []
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -134,10 +137,12 @@ def inspect_aar(path, require_safety=False):
         if len(names) != len(set(names)):
             raise ValueError("Duplicate ZIP entries: " + str(path))
         entries = {name.split("/")[1]: name for name in names
-                   if re.fullmatch(r"jni/[^/]+/libbox\.so", name)}
-        if set(entries) != set(ABIS):
-            raise ValueError("AAR must contain exactly four ABIs: " + str(sorted(entries)))
+                   if re.fullmatch(r"jni/[^/]+/libraybox\.so", name)}
+        if set(entries) != expected_abis:
+            raise ValueError("AAR ABIs differ from expected selection: " + str(sorted(entries)))
         for abi in ABIS:
+            if abi not in expected_abis:
+                continue
             library = archive.read(entries[abi])
             native.append(inspect_elf(library, abi))
             if require_safety:
@@ -148,21 +153,21 @@ def inspect_aar(path, require_safety=False):
                     if marker in library:
                         raise ValueError("Forbidden implementation for " + abi + ": " + marker.decode())
         with zipfile.ZipFile(io.BytesIO(archive.read("classes.jar"))) as classes:
-            required = {"CommandServer", "CommandClient", "PlatformInterface", "Libbox"}
+            required = {"CommandServer", "CommandClient", "PlatformInterface", "Raybox"}
             for name in required:
-                class_data = classes.read("io/nekohasekai/libbox/" + name + ".class")
+                class_data = classes.read("io/raybox/raybox/" + name + ".class")
                 if class_data[:4] != b"\xca\xfe\xba\xbe":
                     raise ValueError("Invalid Java class: " + name)
-            server = public_methods(classes.read("io/nekohasekai/libbox/CommandServer.class"))
+            server = public_methods(classes.read("io/raybox/raybox/CommandServer.class"))
             for method in ("pause", "wake", "resetNetwork"):
                 if (method, "()V") not in server:
                     raise ValueError("Missing CommandServer method: " + method)
-            platform = public_methods(classes.read("io/nekohasekai/libbox/PlatformInterface.class"))
+            platform = public_methods(classes.read("io/raybox/raybox/PlatformInterface.class"))
             if ("useProcFS", "()Z") not in platform:
                 raise ValueError("Missing RayBox PlatformInterface.useProcFS")
-            libbox = public_methods(classes.read("io/nekohasekai/libbox/Libbox.class"))
-            if ("xrayVersion", "()Ljava/lang/String;") not in libbox:
-                raise ValueError("Missing RayBox Libbox.xrayVersion")
+            raybox = public_methods(classes.read("io/raybox/raybox/Raybox.class"))
+            if ("version", "()Ljava/lang/String;") not in raybox:
+                raise ValueError("Missing RayBox.version")
     return {"name": path.name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
             "nativeLibraries": native}
 

@@ -29,7 +29,7 @@ env:
 
 jobs:
   validate:
-    name: Validate Xray server source
+    name: Validate RayBox server source
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -37,10 +37,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: Xray-core/go.sum
+          cache-dependency-path: go.sum
       - name: Test server transport changes
-        working-directory: Xray-core
-        run: go test ./transport/internet/splithttp ./transport/internet/tls ./infra/conf -run '^(TestRX|TestXrayRX|TestOOB|TestCertificateReload)' -count=1 -timeout 120s
+        run: go test ./internal/protocol/transport/internet/splithttp ./internal/protocol/transport/internet/tls ./internal/protocol/infra/conf -run '^(TestRX|TestXrayRX|TestOOB|TestCertificateReload)' -count=1 -timeout 120s
 
   build:
     name: Build ${{ matrix.arch }}
@@ -65,9 +64,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: Xray-core/go.sum
-      - name: Build Linux Xray core
-        working-directory: Xray-core
+          cache-dependency-path: go.sum
+      - name: Build Linux RayBox core
         env:
           ARCH: ${{ matrix.arch }}
           GOOS: linux
@@ -78,28 +76,19 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(go env GOVERSION)" = "go${GO_VERSION}"
-          version_number="$(python3 - <<'PY'
-          from pathlib import Path
-          values = {}
-          for line in Path('core/core.go').read_text().splitlines():
-              fields = line.split()
-              if len(fields) == 4 and fields[0] in ('Version_x', 'Version_y', 'Version_z') and fields[1:3] == ['byte', '=']:
-                  values[fields[0]] = int(fields[3])
-          print('.'.join(str(values[key]) for key in ('Version_x', 'Version_y', 'Version_z')))
-          PY
-          )"
-          export VERSION="raybox-${version_number}-${GITHUB_SHA::12}"
+          export VERSION="$(GOOS= GOARCH= GOARM= go run ./cmd/internal/read_tag)"
+          test "$VERSION" = "$(tr -d '[:space:]' < VERSION)-${GITHUB_SHA::12}"
           export BUILD_GO_VERSION="$(go version)"
-          mkdir -p ../artifacts
+          mkdir -p artifacts
           go build -trimpath -buildvcs=false \
-            -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=${VERSION}" \
-            -o "../artifacts/xray-linux-${ARCH}" ./main
-          test -x "../artifacts/xray-linux-${ARCH}"
+            -ldflags="-s -w -buildid= -X github.com/roseforljh/RayBox-rx/constant.Version=${VERSION} -X github.com/roseforljh/RayBox-rx/internal/protocol/core.build=${VERSION}" \
+            -o "artifacts/raybox-linux-${ARCH}" ./cmd/raybox-server
+          test -x "artifacts/raybox-linux-${ARCH}"
           python3 - <<'PY'
           import hashlib, json, os, struct
           from pathlib import Path
           arch = os.environ['ARCH']
-          path = Path('../artifacts') / ('xray-linux-' + arch)
+          path = Path('artifacts') / ('raybox-linux-' + arch)
           data = path.read_bytes()
           elf_class, machine = {'amd64': (2, 62), 'arm64': (2, 183), 'armv7': (1, 40)}[arch]
           if len(data) < 52 or data[:4] != b'\x7fELF' or data[4:6] != bytes((elf_class, 1)) or struct.unpack_from('<H', data, 18)[0] != machine:
@@ -109,8 +98,8 @@ jobs:
           (path.parent / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
           PY
           if [ "$ARCH" = amd64 ]; then
-            "../artifacts/xray-linux-${ARCH}" version | tee ../artifacts/version.txt
-            grep -F "$VERSION" ../artifacts/version.txt
+            "artifacts/raybox-linux-${ARCH}" version | tee artifacts/version.txt
+            grep -F "$VERSION" artifacts/version.txt
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -122,7 +111,7 @@ jobs:
 
   publish:
     name: Publish immutable server release
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -150,20 +139,20 @@ jobs:
           if source['commit'] != commit or source['dirty']:
               raise SystemExit('Source identity mismatch')
           manifest = {'schemaVersion': 1, 'repository': 'roseforljh/RayBox-rx', **source,
-                      'tag': 'server-' + commit, 'version': None, 'xrayVersion': None,
+                      'tag': 'server-' + commit, 'product': 'RayBox', 'version': None,
                       'goVersion': None, 'architectures': ['amd64', 'arm64', 'armv7'],
                       'rxDefault': False, 'oobDefault': False, 'assets': {}}
           for arch, (elf_class, machine) in {'amd64': (2, 62), 'arm64': (2, 183), 'armv7': (1, 40)}.items():
               directory = Path('downloaded') / ('raybox-server-' + arch + '-' + commit)
               metadata = json.loads((directory / 'metadata.json').read_text())
-              filename = 'xray-linux-' + arch
+              filename = 'raybox-linux-' + arch
               data = (directory / filename).read_bytes()
               asset = {'file': filename, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
               if metadata['arch'] != arch or metadata['commit'] != commit or metadata['asset'] != asset:
                   raise SystemExit('Artifact metadata mismatch: ' + arch)
               if len(data) < 52 or data[:4] != b'\x7fELF' or data[4:6] != bytes((elf_class, 1)) or struct.unpack_from('<H', data, 18)[0] != machine:
                   raise SystemExit('Unexpected ELF architecture: ' + arch)
-              if not metadata['version'].startswith('raybox-') or not metadata['version'].endswith('-' + commit[:12]):
+              if metadata['version'] != Path('VERSION').read_text().strip() + '-' + commit[:12]:
                   raise SystemExit('Invalid version: ' + arch)
               if metadata['goVersion'] != 'go version go' + os.environ['GO_VERSION'] + ' linux/amd64':
                   raise SystemExit('Unexpected build toolchain: ' + arch)
@@ -175,17 +164,18 @@ jobs:
               target = output / filename
               target.write_bytes(data)
               target.chmod(0o755)
-          manifest['xrayVersion'] = manifest['version'].removeprefix('raybox-').removesuffix('-' + commit[:12])
           manifest['source'] = {
-              'entry': 'Xray-core/main',
+              'entry': 'cmd/raybox-server',
+              'runtimeLicense': 'docs/reference/runtime/LICENSE',
+              'protocolLicense': 'docs/reference/protocol/LICENSE',
               'url': 'https://github.com/roseforljh/RayBox-rx/tree/' + commit,
-              'license': 'Xray-core/LICENSE',
           }
           (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
           source = 'RayBox server core\nRepository: ' + manifest['repository'] + '\nCommit: ' + commit
-          source += '\nCorresponding source: ' + manifest['repository'] + '/tree/' + commit + '/Xray-core/main\n\n'
+          source += '\nCorresponding source: ' + manifest['repository'] + '/tree/' + commit + '/cmd/raybox-server\n\n'
           (output / 'SOURCE.txt').write_text(source + Path('SOURCE.md').read_text())
-          shutil.copyfile('Xray-core/LICENSE', output / 'LICENSE')
+          shutil.copyfile('docs/reference/runtime/LICENSE', output / 'LICENSE')
+          shutil.copyfile('docs/reference/protocol/LICENSE', output / 'RayBox-Protocol-LICENSE')
           PY
       - name: Create or resume immutable release
         env:
@@ -194,76 +184,100 @@ jobs:
         run: |
           set -euo pipefail
           tag="server-${GITHUB_SHA}"
-          files=(xray-linux-amd64 xray-linux-arm64 xray-linux-armv7 manifest.json SOURCE.txt LICENSE)
-          resolve_tag_commit() {
-            local ref object_type object_sha
-            ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")" || return 1
-            object_type="$(jq -r '.object.type' <<<"$ref")"
-            object_sha="$(jq -r '.object.sha' <<<"$ref")"
-            if [ "$object_type" = tag ]; then
-              gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" --jq '.object.sha'
-            elif [ "$object_type" = commit ]; then
-              printf '%s\n' "$object_sha"
-            else
-              return 1
-            fi
+          files=(raybox-linux-amd64 raybox-linux-arm64 raybox-linux-armv7 manifest.json SOURCE.txt LICENSE RayBox-Protocol-LICENSE)
+          gh_json() {
+            local error status=0
+            error="$(mktemp)"
+            gh api "$1" 2>"$error" || status=$?
+            # Only an explicit 404 means "absent"; auth, rate limit and network errors fail the job.
+            if [ "$status" -ne 0 ] && grep -q 'HTTP 404' "$error"; then status=4; else cat "$error" >&2; fi
+            rm -f "$error"
+            return "$status"
           }
           tag_commit=''
-          if tag_commit="$(resolve_tag_commit 2>/dev/null)"; then
-            test "$tag_commit" = "$GITHUB_SHA"
+          if ref="$(gh_json "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}")"; then
+            case "$(jq -r '.object.type' <<<"$ref")" in
+              commit) tag_commit="$(jq -r '.object.sha' <<<"$ref")" ;;
+              tag) tag_commit="$(gh_json "repos/${GITHUB_REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$ref")" | jq -r '.object.sha')" ;;
+              *) echo "Tag $tag has unexpected object type" >&2; exit 1 ;;
+            esac
+          else
+            [ $? -eq 4 ] || exit 1
           fi
-          release_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$tag\") | {isDraft: .draft}")"
-          if [ -z "$release_json" ]; then
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$GITHUB_SHA" ]; then
+            echo "Tag $tag points to $tag_commit" >&2
+            exit 1
+          fi
+          # Draft releases have no Git tag yet; identify them by release target.
+          ids_text="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")"
+          mapfile -t ids <<<"$ids_text"
+          [ -n "${ids[0]:-}" ] || ids=()
+          if [ "${#ids[@]}" -gt 1 ]; then echo "Multiple releases use tag $tag" >&2; exit 1; fi
+          existing=()
+          if [ "${#ids[@]}" -eq 0 ]; then
             gh release create "$tag" --target "$GITHUB_SHA" --draft --latest=false \
               --title "RayBox server ${GITHUB_SHA::12}" \
               --notes "Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}. Linux amd64, arm64 and armv7. Verify manifest.json before installation."
           else
-            [ -n "$tag_commit" ] || { echo "Existing release $tag has no resolvable tag commit" >&2; exit 1; }
-            mkdir published
-            gh release download "$tag" --dir published
-            if [ ! -f published/manifest.json ]; then
+            release_json="$(gh_json "repos/${GITHUB_REPOSITORY}/releases/${ids[0]}")"
+            is_draft="$(jq -r '.draft' <<<"$release_json")"
+            if [ "$is_draft" = true ]; then
+              target="$(jq -r '.target_commitish' <<<"$release_json")"
+              [ "$target" = "$GITHUB_SHA" ] || { echo "Draft $tag targets $target" >&2; exit 1; }
+            else
+              [ "$tag_commit" = "$GITHUB_SHA" ] || { echo "Published release $tag has no tag at this commit" >&2; exit 1; }
+            fi
+            mapfile -t existing < <(jq -r '.assets[].name' <<<"$release_json")
+            mkdir -p published
+            if [ "${#existing[@]}" -gt 0 ]; then gh release download "$tag" --dir published; fi
+            has() { local item; for item in "${existing[@]}"; do [ "$item" = "$1" ] && return 0; done; return 1; }
+            if has manifest.json; then
+              # A kept draft manifest must describe the binaries uploaded now.
+              if [ "$is_draft" = true ]; then export ASSET_DIR=artifacts; else export ASSET_DIR=published; fi
+              python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          manifest = json.loads(Path('published/manifest.json').read_text())
+          commit = os.environ['GITHUB_SHA']
+          if (manifest.get('repository') != 'roseforljh/RayBox-rx' or manifest.get('commit') != commit or
+                  manifest.get('schemaVersion') != 1 or manifest.get('tag') != 'server-' + commit or
+                  manifest.get('dirty') is not False or manifest.get('rxDefault') is not False or
+                  manifest.get('oobDefault') is not False or not manifest.get('sourceDigest') or
+                  manifest.get('sourceDigestAlgorithm') != 'sha256-git-path-kind-content-v1'):
+              raise SystemExit('Existing manifest identity mismatch')
+          source = manifest.get('source', {})
+          if (source.get('entry') != 'cmd/raybox-server' or
+                  source.get('runtimeLicense') != 'docs/reference/runtime/LICENSE' or
+                  source.get('protocolLicense') != 'docs/reference/protocol/LICENSE' or
+                  source.get('url') != 'https://github.com/roseforljh/RayBox-rx/tree/' + commit):
+              raise SystemExit('Existing manifest source mismatch')
+          for asset in manifest.get('assets', {}).values():
+              path = Path(os.environ['ASSET_DIR']) / asset['file']
+              if not path.is_file() or path.stat().st_size != asset['size'] or hashlib.sha256(path.read_bytes()).hexdigest() != asset['sha256']:
+                  raise SystemExit('Existing manifest asset mismatch: ' + asset['file'])
+          PY
+            elif [ "$is_draft" = false ]; then
               echo "Existing release is missing manifest.json" >&2
               exit 1
             fi
-            python3 - <<'PY'
-            import hashlib, json
-            from pathlib import Path
-            manifest = json.loads(Path('published/manifest.json').read_text())
-            commit = __import__('os').environ['GITHUB_SHA']
-            if (manifest.get('repository') != 'roseforljh/RayBox-rx' or manifest.get('commit') != commit or
-                    manifest.get('schemaVersion') != 1 or manifest.get('tag') != 'server-' + commit or
-                    manifest.get('dirty') is not False or manifest.get('rxDefault') is not False or
-                    manifest.get('oobDefault') is not False or not manifest.get('sourceDigest') or
-                    manifest.get('sourceDigestAlgorithm') != 'sha256-git-path-kind-content-v1'):
-                raise SystemExit('Existing manifest identity mismatch')
-            source = manifest.get('source', {})
-            if (source.get('entry') != 'Xray-core/main' or source.get('license') != 'Xray-core/LICENSE' or
-                    source.get('url') != 'https://github.com/roseforljh/RayBox-rx/tree/' + commit):
-                raise SystemExit('Existing manifest source mismatch')
-            for asset in manifest.get('assets', {}).values():
-                path = Path('published') / asset['file']
-                if not path.is_file() or path.stat().st_size != asset['size'] or hashlib.sha256(path.read_bytes()).hexdigest() != asset['sha256']:
-                    raise SystemExit('Existing manifest asset mismatch: ' + asset['file'])
-            PY
             for file in "${files[@]}"; do
-              if [ "$file" = manifest.json ]; then
-                continue
-              fi
-              if [ ! -f "published/$file" ]; then
-                echo "Existing release is missing asset: $file" >&2
+              [ "$file" = manifest.json ] && continue
+              if ! has "$file"; then
+                [ "$is_draft" = true ] && continue
+                echo "Published release is missing asset: $file" >&2
                 exit 1
               fi
               cmp --silent "artifacts/$file" "published/$file" || { echo "Existing asset differs: $file" >&2; exit 1; }
             done
-            if [ "$(jq -r '.isDraft' <<<"$release_json")" = false ]; then
+            if [ "$is_draft" = false ]; then
               printf 'Reusing published release %s\n' "$tag"
               exit 0
             fi
           fi
           for file in "${files[@]}"; do
-            if [ ! -f "published/$file" ]; then
-              gh release upload "$tag" "artifacts/$file"
-            fi
+            skip=false
+            for item in "${existing[@]}"; do [ "$item" = "$file" ] && skip=true; done
+            [ "$skip" = true ] || gh release upload "$tag" "artifacts/$file"
           done
           gh release edit "$tag" --target "$GITHUB_SHA" --draft=false --latest=false

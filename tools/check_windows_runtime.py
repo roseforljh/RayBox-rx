@@ -14,8 +14,8 @@ from pathlib import Path
 def check_runtime(executable):
     executable = str(executable.resolve(strict=True))
     version = subprocess.check_output([executable, "version"], timeout=15, text=True)
-    if "sing-box version " not in version or "Xray version " not in version:
-        raise ValueError("Executable must report both sing-box and embedded Xray versions")
+    if "RayBox" not in version:
+        raise ValueError("Executable must report RayBox version")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -23,13 +23,11 @@ def check_runtime(executable):
     config = {
         "log": {"level": "error"}, "inbounds": [],
         "outbounds": [
-            {"type": "selector", "tag": "proxy", "outbounds": ["direct", "xray"]},
+            {"type": "selector", "tag": "proxy", "outbounds": ["direct", "session"]},
             {"type": "direct", "tag": "direct"},
-            {"type": "xray", "tag": "xray", "outbound": {
-                "protocol": "vless", "settings": {"vnext": [{
-                    "address": "127.0.0.1", "port": 443, "users": [{
-                        "id": "00000000-0000-0000-0000-000000000001", "encryption": "none"}]}]},
-                "streamSettings": {"network": "tcp"}}}],
+            {"type": "vless", "tag": "session", "server": "127.0.0.1", "server_port": 443,
+             "uuid": "00000000-0000-0000-0000-000000000001",
+             "transport": {"type": "xhttp", "path": "/session", "mode": "packet-up"}}],
         "route": {"final": "proxy"},
         "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{port}", "secret": token}},
     }
@@ -64,10 +62,10 @@ def check_runtime(executable):
                         time.sleep(0.1)
                 if not api_version.get("version"):
                     raise ValueError("Missing Clash API version")
-                for name in ("xray", "direct"):
+                for name in ("session", "direct"):
                     request("/proxies/proxy", {"name": name})
                     proxies = json.loads(request("/proxies"))["proxies"]
-                    if proxies["proxy"]["now"] != name or "xray" not in proxies:
+                    if proxies["proxy"]["now"] != name or "session" not in proxies:
                         raise ValueError("Clash API selector state mismatch")
             finally:
                 if process.poll() is None:

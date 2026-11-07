@@ -47,6 +47,8 @@ class ArtifactChecks(unittest.TestCase):
                     b"kunbox_wireguard_physical_gate_v1", b"kunbox override destination:",
                     b"system TCP connection limit reached: active="}
         self.assertTrue(required.issubset(checker.REQUIRED_MARKERS))
+        for prefix in (b"experimental/libbox.", b"sdk/android."):
+            self.assertIn(prefix + b"RecoverNetworkAuto", checker.FORBIDDEN_MARKERS)
 
     def test_elf_architecture_and_alignment(self):
         for abi in checker.ABIS:
@@ -68,18 +70,18 @@ class ArtifactChecks(unittest.TestCase):
     def test_real_zip_and_missing_abi(self):
         classes = io.BytesIO()
         with zipfile.ZipFile(classes, "w") as archive:
-            for name in ("CommandServer", "CommandClient", "PlatformInterface", "Libbox"):
+            for name in ("CommandServer", "CommandClient", "PlatformInterface", "Raybox"):
                 methods = {"CommandServer": [("pause", "()V"), ("wake", "()V"), ("resetNetwork", "()V")],
                            "PlatformInterface": [("useProcFS", "()Z")],
-                           "Libbox": [("xrayVersion", "()Ljava/lang/String;")]}.get(name, [])
-                archive.writestr("io/nekohasekai/libbox/" + name + ".class", java_class(methods))
+                           "Raybox": [("version", "()Ljava/lang/String;")]}.get(name, [])
+                archive.writestr("io/raybox/raybox/" + name + ".class", java_class(methods))
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "libbox.aar"
+            path = Path(temporary) / "raybox.aar"
             for abis in (list(checker.ABIS), ["arm64-v8a"]):
                 with zipfile.ZipFile(path, "w") as archive:
                     archive.writestr("classes.jar", classes.getvalue())
                     for abi in abis:
-                        archive.writestr("jni/" + abi + "/libbox.so", elf(abi))
+                        archive.writestr("jni/" + abi + "/libraybox.so", elf(abi))
                 if len(abis) == 4:
                     self.assertEqual(len(checker.inspect_aar(path)["nativeLibraries"]), 4)
                     with self.assertRaisesRegex(ValueError, "Missing safety marker"):
@@ -91,15 +93,19 @@ class ArtifactChecks(unittest.TestCase):
                                 markers = b" ".join(checker.REQUIRED_MARKERS)
                                 if forbidden:
                                     markers += checker.FORBIDDEN_MARKERS[0]
-                                archive.writestr("jni/" + abi + "/libbox.so", elf(abi) + markers)
+                                archive.writestr("jni/" + abi + "/libraybox.so", elf(abi) + markers)
                         if forbidden:
                             with self.assertRaisesRegex(ValueError, "Forbidden implementation"):
                                 checker.inspect_aar(path, require_safety=True)
                         else:
                             checker.inspect_aar(path, require_safety=True)
                 else:
-                    with self.assertRaisesRegex(ValueError, "exactly four"):
+                    with self.assertRaisesRegex(ValueError, "ABIs differ"):
                         checker.inspect_aar(path)
+                    report = checker.inspect_aar(path, expected_abis={"arm64-v8a"})
+                    self.assertEqual([item["abi"] for item in report["nativeLibraries"]], ["arm64-v8a"])
+                    with self.assertRaisesRegex(ValueError, "Unsupported ABI"):
+                        checker.inspect_aar(path, expected_abis={"unknown"})
 
     def test_java_method_requires_signature_not_string_presence(self):
         data = java_class([("pause", "(I)V"), ("wake", "()V")])

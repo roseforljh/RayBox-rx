@@ -6,7 +6,7 @@ RayBox-rx 是四个项目唯一的内核源码入口。所有 Android AAR、Wind
 
 1. 建立 repository → 完整 commit → platform tag → build.json/manifest.json → 资产 SHA-256 的唯一身份链。
 2. 逐文件移植 KunBox 定制补丁，不能直接把 v1.14.4 patch 整体应用到 RayBox 基线。
-3. 保留 `protocol/xray/outbound.go` 的 sing-box protected dialer 和 Xray instance context，不得使用 `context.Background()` 破坏保护链。
+3. 标准 VLESS/VMess/Trojan 扩展协议统一通过 `protocol/session` 与 `internal/runtime` handler 运行；`type=xray` 仅保留为旧配置兼容标识，不创建第二个完整 `core.Instance`，也不使用 `context.Background()` 破坏保护链。
 4. 保留 KunBox 当前实际使用的 `CommandServer.pause/wake/resetNetwork` 和平台回调；不恢复旧私有 API，补安全预算与接口定向测试。
 5. Android AAR 统一四 ABI（ARM32/ARM64/x86/x86_64）和 NDK29；server workflow 构建 Linux amd64/arm64/armv7；新增 Windows x64 原生核心 workflow。push 仅编译，发布须显式手动开启。
 6. RX/OOB 默认关闭，显式启用时严格校验；detour/TCP fast open/OOB 冲突必须明确失败。

@@ -5,7 +5,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import shutil
 import struct
 import subprocess
@@ -30,10 +29,9 @@ def build(allow_dirty):
     go_version = subprocess.check_output([go, "version"], env=env, text=True).strip()
     if not go_version.startswith("go version go1.27.3 "):
         raise ValueError("Go 1.27.3 is required")
-    core_text = (ROOT / "Xray-core/core/core.go").read_text(encoding="utf-8")
-    parts = [re.search(r"Version_" + name + r"\s+byte\s*=\s*(\d+)", core_text).group(1) for name in "xyz"]
-    xray_version = ".".join(parts)
-    version = "raybox-" + xray_version + "-" + source["commit"][:12]
+    version = subprocess.check_output([go, "run", "./cmd/internal/read_tag"], cwd=ROOT, env=env, text=True).strip()
+    if version != (ROOT / "VERSION").read_text().strip() + "-" + source["commit"][:12]:
+        raise ValueError("Unexpected RayBox version: " + version)
     artifacts = ROOT / "artifacts"
     output = artifacts / ("server-candidate" if source["dirty"] else "server")
     with tempfile.TemporaryDirectory(prefix="server-build-", dir=artifacts) as temporary:
@@ -41,10 +39,11 @@ def build(allow_dirty):
 
         def target(arch):
             goarch, goarm, elf_class, machine = TARGETS[arch]
-            path = staging / ("xray-linux-" + arch)
-            command = [go, "-C", str(ROOT / "Xray-core"), "build", "-trimpath", "-buildvcs=false",
-                       "-ldflags=-s -w -buildid= -X github.com/xtls/xray-core/core.build=" + version,
-                       "-o", str(path), "./main"]
+            path = staging / ("raybox-linux-" + arch)
+            command = [go, "-C", str(ROOT), "build", "-trimpath", "-buildvcs=false",
+                       "-ldflags=-s -w -buildid= -X github.com/roseforljh/RayBox-rx/constant.Version=" + version +
+                       " -X github.com/roseforljh/RayBox-rx/internal/protocol/core.build=" + version,
+                       "-o", str(path), "./cmd/raybox-server"]
             subprocess.run(command, env=dict(env, GOOS="linux", GOARCH=goarch, GOARM=goarm), check=True)
             data = path.read_bytes()
             if (len(data) < 64 or data[:6] != b"\x7fELF" + bytes((elf_class, 1)) or
@@ -54,15 +53,18 @@ def build(allow_dirty):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             assets = dict(executor.map(target, TARGETS))
-        shutil.copyfile(ROOT / "Xray-core/LICENSE", staging / "LICENSE")
+        # Same license assets as the server release workflow.
+        shutil.copyfile(ROOT / "docs/reference/runtime/LICENSE", staging / "LICENSE")
+        shutil.copyfile(ROOT / "docs/reference/protocol/LICENSE", staging / "RayBox-Protocol-LICENSE")
         (staging / "SOURCE.txt").write_text(
             "RayBox server core\nCommit: " + source["commit"] + "\nSource digest: " + source["sourceDigest"] +
             "\n\n" + (ROOT / "SOURCE.md").read_text(encoding="utf-8"), encoding="utf-8")
         manifest = {"schemaVersion": 1, "repository": "roseforljh/RayBox-rx", **source,
                     "tag": None if source["dirty"] else "server-" + source["commit"],
-                    "version": version, "xrayVersion": xray_version, "goVersion": go_version,
+                    "product": "RayBox", "version": version, "goVersion": go_version,
                     "architectures": list(TARGETS), "rxDefault": False, "oobDefault": False,
-                    "source": {"entry": "Xray-core/main", "license": "Xray-core/LICENSE",
+                    "source": {"entry": "cmd/raybox-server", "runtimeLicense": "docs/reference/runtime/LICENSE",
+                               "protocolLicense": "docs/reference/protocol/LICENSE",
                                "url": "https://github.com/roseforljh/RayBox-rx/tree/" + source["commit"]},
                     "assets": assets}
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

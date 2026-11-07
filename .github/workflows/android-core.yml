@@ -30,9 +30,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.3'
-          cache-dependency-path: |
-            sing-box/go.sum
-            Xray-core/go.sum
+          cache-dependency-path: go.sum
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -43,17 +41,36 @@ jobs:
           packages: platform-tools
       - name: Install Android SDK and NDK
         run: sdkmanager "platforms;android-37" "build-tools;36.0.0" "ndk;29.0.14206865"
-      - name: Test protected dialer and Xray integration
-        working-directory: sing-box
-        run: go test ./common/dialer ./protocol/xray -count=1 -timeout 120s
+      - name: Test protected dialer and RayBox protocol integration
+        run: go test ./common/dialer ./protocol/session ./protocol/streamconn -count=1 -timeout 120s
       - name: Test RX, OOB transport and certificate reload
-        working-directory: Xray-core
-        run: go test ./transport/internet/splithttp ./transport/internet/tls ./infra/conf -run '^(TestRX|TestXrayRX|TestOOB|TestCertificateReload)' -count=1 -timeout 120s
+        run: go test ./internal/protocol/transport/internet/splithttp ./internal/protocol/transport/internet/tls ./internal/protocol/infra/conf -run '^(TestRX|TestXrayRX|TestOOB|TestCertificateReload)' -count=1 -timeout 120s
       - name: Test Android artifact validation helpers
         run: python3 -I tools/test_check_android_artifacts.py
       - name: Build repository source into Android AARs
         shell: pwsh
-        run: ./sing-box/build-libbox.ps1
+        run: ./tools/build-libbox.ps1
+      - name: Upload standard AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raybox-android-${{ github.sha }}-standard-aar
+          path: artifacts/libbox/raybox-android-*-standard.aar
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload legacy AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raybox-android-${{ github.sha }}-legacy-aar
+          path: artifacts/libbox/raybox-android-*-legacy.aar
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload integrated Android bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: raybox-android-${{ github.sha }}-integrated
+          path: artifacts/libbox/raybox-android-*-integrated.zip
+          if-no-files-found: error
+          retention-days: 7
       - name: Preserve built AARs and source manifest
         uses: actions/upload-artifact@v4
         with:
@@ -64,7 +81,7 @@ jobs:
 
   publish:
     name: Publish immutable Android release
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
     needs: android-core
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -85,71 +102,93 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = "android-$env:GITHUB_SHA"
-          $files = @('libbox.aar', 'libbox-legacy.aar', 'build.json', 'LICENSE', 'Xray-LICENSE', 'SOURCE.txt')
           $manifest = Get-Content artifacts/libbox/build.json -Raw | ConvertFrom-Json
+          $tag = "android-$env:GITHUB_SHA"
+          $files = @($manifest.versionedOutputs.name) + @($manifest.bundleName, 'build.json', 'SHA256SUMS', 'LICENSE', 'RayBox-Protocol-LICENSE', 'SOURCE.txt')
+          foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath (Join-Path artifacts/libbox $file))) { throw "Built asset missing: $file" }
+          }
+          if ($manifest.versionedOutputs.Count -ne 2 -or -not $manifest.bundleName) { throw 'Missing versioned Android outputs' }
           if ($manifest.commit -ne $env:GITHUB_SHA -or $manifest.repository -ne $env:GITHUB_REPOSITORY) {
             throw 'Built Android artifact does not match this RayBox source'
           }
           if ($manifest.dirty -ne $false -or $manifest.tag -ne "android-$env:GITHUB_SHA") {
             throw 'Android release artifact must come from a clean tagged source'
           }
-          function Resolve-TagCommit([string]$Name) {
-            $refJson = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$Name" 2>$null | Out-String
-            if ($LASTEXITCODE -ne 0 -or -not $refJson) { return $null }
-            $ref = $refJson | ConvertFrom-Json
-            if ($ref.object.type -eq 'commit') { return $ref.object.sha }
-            if ($ref.object.type -ne 'tag') { throw "Tag $Name has unexpected object type $($ref.object.type)" }
-            $tagObject = gh api "repos/$env:GITHUB_REPOSITORY/git/tags/$($ref.object.sha)" --jq '.object.sha'
-            if ($LASTEXITCODE -ne 0 -or -not $tagObject) { throw "Cannot dereference tag $Name" }
-            return $tagObject.Trim()
+          function Invoke-GhJson([string[]]$Arguments, [switch]$AllowMissing) {
+            $errorFile = New-TemporaryFile
+            try {
+              $output = & gh @Arguments 2>$errorFile | Out-String
+              if ($LASTEXITCODE -eq 0) { return $(if ($output.Trim()) { $output | ConvertFrom-Json } else { $null }) }
+              $message = Get-Content -Raw -LiteralPath $errorFile
+              if ($AllowMissing -and $message -match 'HTTP 404') { return $null }
+              throw "gh $($Arguments[0..1] -join ' ') failed: $message"
+            } finally { Remove-Item -LiteralPath $errorFile -Force }
           }
-          function Assert-Manifest([object]$Candidate, [string]$Path, [string]$Root) {
+          function Resolve-TagCommit {
+            $ref = Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag") -AllowMissing
+            if (-not $ref) { return $null }
+            if ($ref.object.type -eq 'commit') { return $ref.object.sha }
+            if ($ref.object.type -ne 'tag') { throw "Tag $tag has unexpected object type $($ref.object.type)" }
+            return (Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/git/tags/$($ref.object.sha)")).object.sha
+          }
+          function Assert-Manifest([object]$Candidate, [string]$Root) {
             if ($Candidate.repository -ne $env:GITHUB_REPOSITORY -or $Candidate.commit -ne $env:GITHUB_SHA -or
-                $Candidate.dirty -ne $false -or $Candidate.tag -ne $tag) { throw "Manifest identity mismatch: $Path" }
-            foreach ($output in $Candidate.outputs) {
+                $Candidate.dirty -ne $false -or $Candidate.tag -ne $tag) { throw 'Existing manifest identity mismatch' }
+            foreach ($output in $Candidate.versionedOutputs) {
               $assetPath = Join-Path $Root $output.name
-              if (-not (Test-Path -LiteralPath $assetPath)) { throw "Manifest asset missing: $assetPath" }
+              if (-not (Test-Path -LiteralPath $assetPath)) { throw "Versioned asset missing: $($output.name)" }
               $item = Get-Item -LiteralPath $assetPath
               $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLower()
-              if ($item.Length -ne $output.size -or $hash -ne $output.sha256) { throw "Manifest asset mismatch: $assetPath" }
+              if ($item.Length -ne $output.size -or $hash -ne $output.sha256) { throw "Versioned asset mismatch: $($output.name)" }
             }
+            $bundlePath = Join-Path $Root $Candidate.bundleName
+            if (-not (Test-Path -LiteralPath $bundlePath)) { throw "Integrated bundle missing: $($Candidate.bundleName)" }
           }
-          $tagCommit = Resolve-TagCommit $tag
+          # Draft releases have no Git tag yet; identify them by release target.
+          $tagCommit = Resolve-TagCommit
           if ($tagCommit -and $tagCommit -ne $env:GITHUB_SHA) { throw "Tag $tag points to $tagCommit" }
-          $releaseJson = gh release view $tag --json isDraft 2>$null | Out-String
-          $releaseExists = $LASTEXITCODE -eq 0
-          if ($releaseExists) {
-            if (-not $tagCommit) { throw "Existing release $tag has no resolvable tag commit" }
+          $ids = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == ""$tag"") | .id")
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot list releases' }
+          if ($ids.Count -gt 1) { throw "Multiple releases use tag $tag" }
+          $existing = @()
+          if ($ids.Count -eq 0) {
+            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Android $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; Android ARM32, ARM64, x86 and x86_64."
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create release draft' }
+          } else {
+            $release = Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/releases/$($ids[0])")
+            if ($release.draft -and $release.target_commitish -ne $env:GITHUB_SHA) { throw "Draft $tag targets $($release.target_commitish)" }
+            if (-not $release.draft -and $tagCommit -ne $env:GITHUB_SHA) { throw "Published release $tag has no tag at this commit" }
+            $existing = @($release.assets | ForEach-Object { $_.name })
             New-Item -ItemType Directory -Force -Path artifacts/published | Out-Null
-            gh release download $tag --dir artifacts/published
-            if ($LASTEXITCODE -ne 0) { throw "Cannot download existing release $tag" }
-            $oldManifestPath = Join-Path (Resolve-Path artifacts/published) 'build.json'
-            if (-not (Test-Path -LiteralPath $oldManifestPath)) { throw 'Existing release is missing build.json' }
-            $oldManifest = Get-Content $oldManifestPath -Raw | ConvertFrom-Json
-            Assert-Manifest $oldManifest $oldManifestPath (Resolve-Path artifacts/published)
-            foreach ($file in @('libbox.aar', 'libbox-legacy.aar', 'LICENSE', 'Xray-LICENSE', 'SOURCE.txt')) {
-              $builtHash = (Get-FileHash -LiteralPath (Join-Path artifacts/libbox $file) -Algorithm SHA256).Hash.ToLower()
-              $oldPath = Join-Path artifacts/published $file
-              if (Test-Path -LiteralPath $oldPath) {
-                $oldHash = (Get-FileHash -LiteralPath $oldPath -Algorithm SHA256).Hash.ToLower()
-                if ($builtHash -ne $oldHash) { throw "Existing asset differs: $file" }
-              } elseif (-not (($releaseJson | ConvertFrom-Json).isDraft)) { throw "Published release is missing asset: $file" }
+            $published = Resolve-Path artifacts/published
+            if ($existing.Count -gt 0) {
+              gh release download $tag --dir $published
+              if ($LASTEXITCODE -ne 0) { throw "Cannot download existing release $tag" }
             }
-            if (-not (($releaseJson | ConvertFrom-Json).isDraft)) {
-              Write-Host "Reusing published Android release $tag"
+            if ($existing -contains 'build.json') {
+              # A kept draft manifest must describe every binary uploaded now.
+              $assetRoot = $(if ($release.draft) { Resolve-Path artifacts/libbox } else { $published })
+              Assert-Manifest (Get-Content (Join-Path $published 'build.json') -Raw | ConvertFrom-Json) $assetRoot
+            } elseif (-not $release.draft) { throw 'Existing release is missing build.json' }
+            foreach ($file in $files) {
+              if ($file -eq 'build.json') { continue }
+              if ($existing -notcontains $file) {
+                if (-not $release.draft) { throw "Published release is missing asset: $file" }
+                continue
+              }
+              $builtHash = (Get-FileHash -LiteralPath (Join-Path artifacts/libbox $file) -Algorithm SHA256).Hash
+              if ($builtHash -ne (Get-FileHash -LiteralPath (Join-Path $published $file) -Algorithm SHA256).Hash) { throw "Existing asset differs: $file" }
+            }
+            if (-not $release.draft) {
+              Write-Host "Reusing published release $tag"
               exit 0
             }
-          } else {
-            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Android $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; Android ARM32, ARM64, x86 and x86_64."
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot create Android release draft' }
           }
-            foreach ($file in $files) {
-              $existing = Join-Path artifacts/published $file
-              if (-not (Test-Path -LiteralPath $existing)) {
-                gh release upload $tag (Join-Path artifacts/libbox $file)
-                if ($LASTEXITCODE -ne 0) { throw "Cannot upload $file" }
-              }
-            }
+          foreach ($file in $files) {
+            if ($existing -contains $file) { continue }
+            gh release upload $tag (Join-Path artifacts/libbox $file)
+            if ($LASTEXITCODE -ne 0) { throw "Cannot upload $file" }
+          }
           gh release edit $tag --target $env:GITHUB_SHA --draft=false --latest=false
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish Android core release' }
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish release' }

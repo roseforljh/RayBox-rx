@@ -14,20 +14,20 @@
 - 标准与 legacy AAR 都含 `arm64-v8a/armeabi-v7a/x86/x86_64`；两个客户端最终 APK 仍可只交付 ARM32/64。
 - Go1.27.3、JDK17、gomobile0.1.13、NDK29.0.14206865；标准 API24、legacy API21，legacy 不启用 Naive。
 - 实检 AAR ZIP 中 JNI，ELF机器号分别183/40/3/62；64位 LOAD 满足16KiB、32位4KiB对齐。
-- Java保留包 `io.nekohasekai.libbox`；校验公开方法签名 `CommandServer.pause/wake/resetNetwork:()V`、`PlatformInterface.useProcFS:()Z`、`Libbox.xrayVersion:()Ljava/lang/String;`。
+- Java包 `io.raybox.raybox`，产物 `raybox.aar`/`raybox-legacy.aar`；校验公开方法签名 `CommandServer.pause/wake/resetNetwork:()V`、`PlatformInterface.useProcFS:()Z`、`Raybox.version:()Ljava/lang/String;`。不再提供 `xrayVersion`。
 - 每 ABI 保留 KunBox 拨号、WireGuard、目标改写和 sing-tun TCP 限额标记；禁止旧恢复、Tailscale、sing-box私有Encryption实现。Xray原生Encryption不在禁止范围。
 - 安全标记只是构建门禁；不能替代 Go 定向测试、API验证及手机运行验证。
 
 ## Windows
 
-- Windows x64 原生 `sing-box/cmd/sing-box` 外壳，包含内嵌 Xray；不把 `Xray-core/main` 的 server executable 当客户端核心。
-- 保持 `version/check -c/run -c` 与回环 Clash API。manifest验证PE machine=0x8664、size/hash、实际双核版本、tags和完整来源。
+- Windows x64 原生 `cmd/raybox`（`raybox-windows-amd64.exe`）；不把 `cmd/raybox-server` 当客户端核心。
+- 保持 `version/check -c/run -c` 与回环 Clash API。manifest验证PE machine=0x8664、size/hash、RayBox 版本、tags和完整来源。
 - 不添加 FFI/DLL 控制层；有实际Naive依赖再纳入匹配的支持文件，不能凭空声明已有。
 - 原生出站接入需同时改正式连接和测速；单个受管 RayBox 核心进程，无遗留独立 Xray bridge。停止只作用自有 PID/句柄，保留系统代理/PAC恢复。
 
 ## 服务端
 
-- 当前 server 产物为同仓 `Xray-core/main`，Linux amd64/arm64/armv7；允许与客户端不同入口，但必须同一组合仓提交且保留许可证。
+- server 产物为同仓 `cmd/raybox-server`（`raybox-linux-*`），Linux amd64/arm64/armv7；允许与客户端不同入口，但必须同一组合仓提交且保留许可证。
 - manifest/ELF/架构/size/hash、配置检查、不可变目录、稳定检查、失败回滚和保持停止均保留。源码统一不表示跳过 dispatch 业务签名或节点准入。
 
 ## 节点与配置
@@ -40,4 +40,4 @@
 
 ## 发布
 
-push只编译验证与保存CI artifact；`workflow_dispatch` 的 `publish` 默认false，仅显式true进入拥有contents:write的发布job。脚本能力不等于本轮发布授权；本轮不执行远程发布。
+push `main` 构建并发布；`workflow_dispatch` 的 `publish` 默认false，仅显式true进入拥有contents:write的发布job。详见 `WORKFLOWS.md`。脚本能力不等于本轮发布授权；本轮不执行远程发布。

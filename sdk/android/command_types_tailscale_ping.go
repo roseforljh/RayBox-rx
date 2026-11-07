@@ -1,0 +1,34 @@
+package raybox
+
+import "github.com/roseforljh/RayBox-rx/daemon"
+
+type TailscalePingResult struct {
+	LatencyMs      float64
+	IsDirect       bool
+	Endpoint       string
+	PeerRelay      string
+	DERPRegionID   int32
+	DERPRegionCode string
+	Error          string
+}
+
+type TailscalePingHandler interface {
+	OnPingResult(result *TailscalePingResult)
+	OnError(message string)
+}
+
+type TailscalePingSession struct {
+	streamSession
+}
+
+func tailscalePingResultFromGRPC(response *daemon.TailscalePingResponse) *TailscalePingResult {
+	return &TailscalePingResult{
+		LatencyMs:      response.LatencyMs,
+		IsDirect:       response.IsDirect,
+		Endpoint:       response.Endpoint,
+		PeerRelay:      response.PeerRelay,
+		DERPRegionID:   response.DerpRegionID,
+		DERPRegionCode: response.DerpRegionCode,
+		Error:          response.Error,
+	}
+}
