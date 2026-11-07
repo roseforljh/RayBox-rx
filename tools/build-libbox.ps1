@@ -39,6 +39,25 @@ function Invoke-Clean {
     if ($LASTEXITCODE -ne 0) { throw "failed: $args" }
 }
 
+function Confirm-CleanSource {
+    $status = @(& git status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect source status' }
+    $generated = @($status | Where-Object { $_ -match '^\?\? ' } | ForEach-Object { $_.Substring(3) })
+    $tracked = @($status | Where-Object { $_ -notmatch '^\?\? ' })
+    if ($tracked.Count -gt 0) {
+        throw "Tracked source changed during build: $($tracked -join ', ')"
+    }
+    foreach ($path in $generated) {
+        Remove-Item -LiteralPath (Join-Path $root $path) -Recurse -Force
+    }
+    $clean = & python -I $checker source $root | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $clean.commit -ne $source.commit -or
+        $clean.dirty -ne $source.dirty -or $clean.sourceDigest -ne $source.sourceDigest) {
+        throw 'Source changed during build; candidate has not been promoted'
+    }
+    return $clean
+}
+
 Push-Location $root
 try {
     Invoke-Clean go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.13
@@ -51,11 +70,7 @@ try {
     $outputs = ConvertFrom-Json -InputObject ($aarReport -join "`n") -NoEnumerate
     if ($outputs.Count -ne 2 -or $outputs[0].name -ne 'raybox.aar' -or
         $outputs[1].name -ne 'raybox-legacy.aar') { throw 'Invalid AAR report shape' }
-    $after = & python -I $checker source $root | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $after.commit -ne $source.commit -or
-        $after.dirty -ne $source.dirty) {
-        throw 'Source changed during build; candidate has not been promoted'
-    }
+    $after = Confirm-CleanSource
     if ($after.sourceDigest -ne $source.sourceDigest) {
         Write-Warning 'Generated build metadata changed the source digest; continuing with the clean checkout identity'
     }
@@ -108,11 +123,7 @@ try {
         )
         bundleName = "raybox-android-$version-integrated.zip"
     } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $staging 'build.json')
-    $finalSource = & python -I $checker source $root | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $finalSource.commit -ne $source.commit -or
-        $finalSource.dirty -ne $source.dirty) {
-        throw 'Source changed before candidate promotion'
-    }
+    $finalSource = Confirm-CleanSource
     if ($finalSource.sourceDigest -ne $source.sourceDigest) {
         Write-Warning 'Generated build metadata changed the source digest; continuing with the clean checkout identity'
     }
