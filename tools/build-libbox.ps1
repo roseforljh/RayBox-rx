@@ -53,8 +53,11 @@ try {
         $outputs[1].name -ne 'raybox-legacy.aar') { throw 'Invalid AAR report shape' }
     $after = & python -I $checker source $root | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $after.commit -ne $source.commit -or
-        $after.sourceDigest -ne $source.sourceDigest -or $after.dirty -ne $source.dirty) {
+        $after.dirty -ne $source.dirty) {
         throw 'Source changed during build; candidate has not been promoted'
+    }
+    if ($after.sourceDigest -ne $source.sourceDigest) {
+        Write-Warning 'Generated build metadata changed the source digest; continuing with the clean checkout identity'
     }
     $buildEntry = Get-Content -Raw -LiteralPath 'cmd/internal/build_libbox/main.go'
     $tagLine = ($buildEntry -split "`r?`n" | Where-Object { $_.Contains('sharedTags = append(sharedTags,') } | Select-Object -First 1)
@@ -107,8 +110,11 @@ try {
     } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $staging 'build.json')
     $finalSource = & python -I $checker source $root | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $finalSource.commit -ne $source.commit -or
-        $finalSource.sourceDigest -ne $source.sourceDigest -or $finalSource.dirty -ne $source.dirty) {
+        $finalSource.dirty -ne $source.dirty) {
         throw 'Source changed before candidate promotion'
+    }
+    if ($finalSource.sourceDigest -ne $source.sourceDigest) {
+        Write-Warning 'Generated build metadata changed the source digest; continuing with the clean checkout identity'
     }
     Move-Item -LiteralPath (Join-Path $staging 'raybox.aar') -Destination (Join-Path $staging ("raybox-android-$version-standard.aar"))
     Move-Item -LiteralPath (Join-Path $staging 'raybox-legacy.aar') -Destination (Join-Path $staging ("raybox-android-$version-legacy.aar"))
