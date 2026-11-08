@@ -8,27 +8,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目与布局
 
-项目名称为 **RayBox-rx**，根目录为组合源码Git仓库。`sing-box/` 和 `Xray-core/` 是普通源码目录，保留各自上游Go模块路径。Go命令从对应模块执行，Git命令从仓库根目录执行。
+项目名称为 **RayBox-rx**，根目录是单一Go模块 `github.com/roseforljh/RayBox-rx`，Go与Git命令都从根目录执行。产品版本只在 `VERSION`，构建注入 `constant.Version`。运行层在根 `adapter/ route/ dns/ option/ protocol/ transport/ service/`，扩展协议实现在 `internal/protocol/`，入口 `cmd/raybox`、`cmd/raybox-server`，Android绑定 `sdk/android`（Java包 `io.raybox.raybox`）。
 
-`sing-box/go.mod` 用 `replace github.com/xtls/xray-core => ../Xray-core` 接入本地增强内核。`sing-box/protocol/xray/outbound.go` 将Xray实例作为出站，Xray拨号经 `internet.UseAlternativeSystemDialer` 回到sing-box受保护拨号器；该链依赖 `core.FromContext(ctx)`，不能用 `context.Background()` 丢弃实例上下文。
+扩展协议拨号必须回到RayBox受保护拨号器：`internal/protocol/transport/internet` 的系统拨号经 `internet.UseAlternativeSystemDialer` 回调，依赖请求上下文中的协议实例/服务，不能用 `context.Background()` 丢弃。VLESS、VMess、Trojan 的标准入口统一走 `protocol/session` 与 `internal/runtime` handler 直调；`type=xray` 仅作为旧配置兼容标识，不是独立产品或生产实例路径。
 
 ## 构建与检查
 
-要求Go1.27，已有验证工具链为1.27.3。正式Xray入口为 `Xray-core/main`，sing-box入口为 `sing-box/cmd/sing-box`。命令与Android环境见根README。AAR脚本为 `sing-box/build-libbox.ps1`，输出 `artifacts/libbox/`。
+要求Go1.27.3，`GOTOOLCHAIN=local`；Go缓存放D盘（`GOCACHE=D:/RayBox-rx/artifacts/build-cache/go`）。命令与Android环境见根README，构建脚本在 `tools/`，输出 `artifacts/`。
 
 只运行与改动有关的检查，纯文档不构建：
 
 ```sh
-# sing-box/ 下
-go test ./protocol/xray -count=1
-# Xray-core/ 下
-go test ./transport/internet/splithttp ./transport/internet/tls ./infra/conf -run '^(TestRX|TestXrayRX|TestCertificateReload)' -count=1
-go run ./infra/vprotogen -mode check
-# 根目录
+go test ./protocol/session ./protocol/streamconn ./common/dialer -count=1
+go test ./internal/protocol/transport/internet/splithttp ./internal/protocol/transport/internet/tls ./internal/protocol/infra/conf -run '^(TestRX|TestXrayRX|TestOOB|TestCertificateReload)' -count=1
+go run ./tools/vprotogen -pwd internal/protocol -mode check   # 另有 daemon、experimental/boxdd、experimental/v2rayapi、transport/v2raygrpc；make proto_check 全查
+python -I tools/test_check_android_artifacts.py
+python -I tools/test_release_workflows.py   # 改 workflow 发布步骤时
 git diff --check
 ```
 
-并发/生命周期变更才使用相关定向race，需要CGO和C工具链。protobuf来源是 `.proto`，用仓库 `infra/vprotogen` 生成。格式工具为 `infra/vformat`，不得为消除无关上游格式问题批量重写。历史上游vet告警不算本次引入。
+并发/生命周期变更才使用相关定向race，需要CGO和C工具链。protobuf来源是 `.proto`，用 `tools/vprotogen` 生成。格式工具为 `internal/protocol/infra/vformat`，不得为消除无关上游格式问题批量重写。历史上游vet告警不算本次引入。
 
 ## RX流程
 

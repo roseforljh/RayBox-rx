@@ -1,0 +1,87 @@
+package kcp
+
+import (
+	"context"
+	"io"
+	"sync/atomic"
+
+	"github.com/roseforljh/RayBox-rx/internal/protocol/common"
+	"github.com/roseforljh/RayBox-rx/internal/protocol/common/buf"
+	"github.com/roseforljh/RayBox-rx/internal/protocol/common/dice"
+	"github.com/roseforljh/RayBox-rx/internal/protocol/common/errors"
+	"github.com/roseforljh/RayBox-rx/internal/protocol/common/net"
+	"github.com/roseforljh/RayBox-rx/internal/protocol/transport/internet"
+	"github.com/roseforljh/RayBox-rx/internal/protocol/transport/internet/stat"
+	"github.com/roseforljh/RayBox-rx/internal/protocol/transport/internet/tls"
+)
+
+var globalConv = uint32(dice.RollUint16())
+
+func fetchInput(_ context.Context, input io.Reader, reader PacketReader, conn *Connection) {
+	cache := make(chan *buf.Buffer, 1024)
+	go func() {
+		for {
+			payload := buf.New()
+			if _, err := payload.ReadFrom(input); err != nil {
+				payload.Release()
+				close(cache)
+				return
+			}
+			select {
+			case cache <- payload:
+			default:
+				payload.Release()
+			}
+		}
+	}()
+
+	for payload := range cache {
+		segments := reader.Read(payload.Bytes())
+		payload.Release()
+		if len(segments) > 0 {
+			conn.Input(segments)
+		}
+	}
+}
+
+// DialKCP dials a new KCP connections to the specific destination.
+func DialKCP(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
+	dest.Network = net.Network_UDP
+	errors.LogInfo(ctx, "dialing mKCP to ", dest)
+
+	var conn net.Conn
+	var err error
+	if streamSettings.FinalMask != nil {
+		conn, err = streamSettings.FinalMask.DialUDP(ctx, dest)
+	} else {
+		conn, err = internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
+	}
+	if err != nil {
+		return nil, errors.New("failed to dial to dest: ", err).Base(err)
+	}
+
+	kcpSettings := streamSettings.ProtocolSettings.(*Config)
+
+	reader := &KCPPacketReader{}
+
+	conv := uint16(atomic.AddUint32(&globalConv, 1))
+	session := NewConnection(ConnMetadata{
+		LocalAddr:    conn.LocalAddr(),
+		RemoteAddr:   conn.RemoteAddr(),
+		Conversation: conv,
+	}, conn, conn, kcpSettings)
+
+	go fetchInput(ctx, conn, reader, session)
+
+	var iConn stat.Connection = session
+
+	if config := tls.ConfigFromStreamSettings(streamSettings); config != nil {
+		iConn = tls.Client(iConn, config.GetTLSConfig(tls.WithDestination(dest)))
+	}
+
+	return iConn, nil
+}
+
+func init() {
+	common.Must(internet.RegisterTransportDialer(ProtocolName, DialKCP))
+}
