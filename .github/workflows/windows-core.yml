@@ -49,7 +49,9 @@ jobs:
           $manifest = Get-Content artifacts/windows/manifest.json -Raw | ConvertFrom-Json
           if ($manifest.repository -ne $env:GITHUB_REPOSITORY) { throw 'Unexpected source repository' }
           if ($manifest.commit -ne $env:GITHUB_SHA -or $manifest.fullHead -ne $env:GITHUB_SHA) { throw 'Artifact commit mismatch' }
-          if ($manifest.tag -ne "windows-$env:GITHUB_SHA") { throw 'Unexpected release tag' }
+          $version = (Get-Content -Raw VERSION).Trim()
+          if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or $manifest.version -ne $version) { throw 'Invalid RayBox version' }
+          if ($manifest.tag -ne "windows-v$version") { throw 'Unexpected release tag' }
           if ($manifest.dirty) { throw 'Release artifact must be built from clean source' }
           if ([string]::IsNullOrWhiteSpace($manifest.sourceDigest) -or $manifest.sourceDigestAlgorithm -ne 'sha256-git-path-kind-content-v1') { throw 'Missing source digest' }
           if ($manifest.source.url -ne "https://github.com/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA" -or
@@ -93,12 +95,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = "windows-$env:GITHUB_SHA"
+          $version = (Get-Content -Raw VERSION).Trim()
+          if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid RayBox version' }
+          $tag = "windows-v$version"
           $files = @('raybox-windows-amd64.exe', 'manifest.json', 'LICENSE', 'RayBox-Protocol-LICENSE', 'SOURCE.txt')
           $manifest = Get-Content artifacts/windows/manifest.json -Raw | ConvertFrom-Json
           if ($manifest.repository -ne $env:GITHUB_REPOSITORY -or
               $manifest.commit -ne $env:GITHUB_SHA -or $manifest.fullHead -ne $env:GITHUB_SHA -or
-              $manifest.tag -ne "windows-$env:GITHUB_SHA" -or $manifest.dirty) {
+              $manifest.tag -ne $tag -or $manifest.version -ne $version -or $manifest.dirty) {
             throw 'Built Windows artifact does not match this clean RayBox source'
           }
           if ([string]::IsNullOrWhiteSpace($manifest.sourceDigest) -or
@@ -127,7 +131,7 @@ jobs:
           }
           function Assert-Manifest([object]$Candidate, [string]$Root) {
             if ($Candidate.repository -ne $env:GITHUB_REPOSITORY -or $Candidate.commit -ne $env:GITHUB_SHA -or
-                $Candidate.fullHead -ne $env:GITHUB_SHA -or $Candidate.tag -ne "windows-$env:GITHUB_SHA" -or $Candidate.dirty) { throw 'Existing manifest identity mismatch' }
+                $Candidate.fullHead -ne $env:GITHUB_SHA -or $Candidate.tag -ne $tag -or $Candidate.version -ne $version -or $Candidate.dirty) { throw 'Existing manifest identity mismatch' }
             if ([string]::IsNullOrWhiteSpace($Candidate.sourceDigest) -or
                 $Candidate.sourceDigestAlgorithm -ne 'sha256-git-path-kind-content-v1' -or
                 $Candidate.source.url -ne "https://github.com/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA" -or
@@ -149,7 +153,7 @@ jobs:
           if ($ids.Count -gt 1) { throw "Multiple releases use tag $tag" }
           $existing = @()
           if ($ids.Count -eq 0) {
-            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Windows $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; native RayBox Windows amd64 core."
+            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Windows v$version" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; native RayBox Windows amd64 core."
             if ($LASTEXITCODE -ne 0) { throw 'Cannot create release draft' }
           } else {
             $release = Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/releases/$($ids[0])")

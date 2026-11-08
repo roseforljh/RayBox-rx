@@ -103,7 +103,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $manifest = Get-Content artifacts/libbox/build.json -Raw | ConvertFrom-Json
-          $tag = "android-$env:GITHUB_SHA"
+          $version = (Get-Content -Raw VERSION).Trim()
+          if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or $manifest.version -ne $version) { throw 'Invalid RayBox version' }
+          $tag = "android-v$version"
           $files = @($manifest.versionedOutputs.name) + @($manifest.bundleName, 'build.json', 'SHA256SUMS', 'LICENSE', 'RayBox-Protocol-LICENSE', 'SOURCE.txt')
           foreach ($file in $files) {
             if (-not (Test-Path -LiteralPath (Join-Path artifacts/libbox $file))) { throw "Built asset missing: $file" }
@@ -112,7 +114,7 @@ jobs:
           if ($manifest.commit -ne $env:GITHUB_SHA -or $manifest.repository -ne $env:GITHUB_REPOSITORY) {
             throw 'Built Android artifact does not match this RayBox source'
           }
-          if ($manifest.dirty -ne $false -or $manifest.tag -ne "android-$env:GITHUB_SHA") {
+          if ($manifest.dirty -ne $false -or $manifest.tag -ne $tag) {
             throw 'Android release artifact must come from a clean tagged source'
           }
           function Invoke-GhJson([string[]]$Arguments, [switch]$AllowMissing) {
@@ -134,7 +136,7 @@ jobs:
           }
           function Assert-Manifest([object]$Candidate, [string]$Root) {
             if ($Candidate.repository -ne $env:GITHUB_REPOSITORY -or $Candidate.commit -ne $env:GITHUB_SHA -or
-                $Candidate.dirty -ne $false -or $Candidate.tag -ne $tag) { throw 'Existing manifest identity mismatch' }
+                $Candidate.dirty -ne $false -or $Candidate.tag -ne $tag -or $Candidate.version -ne $version) { throw 'Existing manifest identity mismatch' }
             foreach ($output in $Candidate.versionedOutputs) {
               $assetPath = Join-Path $Root $output.name
               if (-not (Test-Path -LiteralPath $assetPath)) { throw "Versioned asset missing: $($output.name)" }
@@ -153,7 +155,7 @@ jobs:
           if ($ids.Count -gt 1) { throw "Multiple releases use tag $tag" }
           $existing = @()
           if ($ids.Count -eq 0) {
-            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Android $($env:GITHUB_SHA.Substring(0, 12))" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; Android ARM32, ARM64, x86 and x86_64."
+            gh release create $tag --target $env:GITHUB_SHA --draft --latest=false --title "RayBox Android v$version" --notes "Built from $env:GITHUB_REPOSITORY@$env:GITHUB_SHA; Android ARM32, ARM64, x86 and x86_64."
             if ($LASTEXITCODE -ne 0) { throw 'Cannot create release draft' }
           } else {
             $release = Invoke-GhJson @('api', "repos/$env:GITHUB_REPOSITORY/releases/$($ids[0])")

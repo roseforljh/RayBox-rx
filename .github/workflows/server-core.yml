@@ -77,7 +77,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(go env GOVERSION)" = "go${GO_VERSION}"
           export VERSION="$(GOOS= GOARCH= GOARM= go run ./cmd/internal/read_tag)"
-          test "$VERSION" = "$(tr -d '[:space:]' < VERSION)-${GITHUB_SHA::12}"
+          test "$VERSION" = "$(tr -d '[:space:]' < VERSION)"
           export BUILD_GO_VERSION="$(go version)"
           mkdir -p artifacts
           go build -trimpath -buildvcs=false \
@@ -139,7 +139,7 @@ jobs:
           if source['commit'] != commit or source['dirty']:
               raise SystemExit('Source identity mismatch')
           manifest = {'schemaVersion': 1, 'repository': 'roseforljh/RayBox-rx', **source,
-                      'tag': 'server-' + commit, 'product': 'RayBox', 'version': None,
+                      'tag': 'server-v' + Path('VERSION').read_text().strip(), 'product': 'RayBox', 'version': None,
                       'goVersion': None, 'architectures': ['amd64', 'arm64', 'armv7'],
                       'rxDefault': False, 'oobDefault': False, 'assets': {}}
           for arch, (elf_class, machine) in {'amd64': (2, 62), 'arm64': (2, 183), 'armv7': (1, 40)}.items():
@@ -152,7 +152,7 @@ jobs:
                   raise SystemExit('Artifact metadata mismatch: ' + arch)
               if len(data) < 52 or data[:4] != b'\x7fELF' or data[4:6] != bytes((elf_class, 1)) or struct.unpack_from('<H', data, 18)[0] != machine:
                   raise SystemExit('Unexpected ELF architecture: ' + arch)
-              if metadata['version'] != Path('VERSION').read_text().strip() + '-' + commit[:12]:
+              if metadata['version'] != Path('VERSION').read_text().strip():
                   raise SystemExit('Invalid version: ' + arch)
               if metadata['goVersion'] != 'go version go' + os.environ['GO_VERSION'] + ' linux/amd64':
                   raise SystemExit('Unexpected build toolchain: ' + arch)
@@ -183,7 +183,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag="server-${GITHUB_SHA}"
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'Invalid RayBox version' >&2; exit 1; }
+          export RAYBOX_VERSION="$version"
+          tag="server-v${version}"
+          python3 -c 'import json,os; m=json.load(open("artifacts/manifest.json")); assert m["version"] == os.environ["RAYBOX_VERSION"] and m["tag"] == "server-v" + os.environ["RAYBOX_VERSION"] and m["commit"] == os.environ["GITHUB_SHA"] and m["dirty"] is False'
           files=(raybox-linux-amd64 raybox-linux-arm64 raybox-linux-armv7 manifest.json SOURCE.txt LICENSE RayBox-Protocol-LICENSE)
           gh_json() {
             local error status=0
@@ -217,7 +221,7 @@ jobs:
           existing=()
           if [ "${#ids[@]}" -eq 0 ]; then
             gh release create "$tag" --target "$GITHUB_SHA" --draft --latest=false \
-              --title "RayBox server ${GITHUB_SHA::12}" \
+              --title "RayBox Server v${version}" \
               --notes "Built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}. Linux amd64, arm64 and armv7. Verify manifest.json before installation."
           else
             release_json="$(gh_json "repos/${GITHUB_REPOSITORY}/releases/${ids[0]}")"
@@ -241,7 +245,8 @@ jobs:
           manifest = json.loads(Path('published/manifest.json').read_text())
           commit = os.environ['GITHUB_SHA']
           if (manifest.get('repository') != 'roseforljh/RayBox-rx' or manifest.get('commit') != commit or
-                  manifest.get('schemaVersion') != 1 or manifest.get('tag') != 'server-' + commit or
+                  manifest.get('schemaVersion') != 1 or manifest.get('tag') != 'server-v' + os.environ['RAYBOX_VERSION'] or
+                  manifest.get('version') != os.environ['RAYBOX_VERSION'] or
                   manifest.get('dirty') is not False or manifest.get('rxDefault') is not False or
                   manifest.get('oobDefault') is not False or not manifest.get('sourceDigest') or
                   manifest.get('sourceDigestAlgorithm') != 'sha256-git-path-kind-content-v1'):

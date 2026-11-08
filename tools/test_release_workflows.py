@@ -17,6 +17,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 SHA = "0123456789abcdef0123456789abcdef01234567"
 REPO = "roseforljh/RayBox-rx"
+VERSION = "0.0.1"
 
 FAKE_GH = r'''
 import json, os, shutil, sys
@@ -98,14 +99,14 @@ def step(workflow, name):
 
 def manifest(kind, files):
     common = {"repository": REPO, "commit": SHA, "dirty": False, "sourceDigest": "d",
-              "sourceDigestAlgorithm": "sha256-git-path-kind-content-v1"}
+              "version": VERSION, "sourceDigestAlgorithm": "sha256-git-path-kind-content-v1"}
     import hashlib
     assets = {f: {"file": f, "size": len(files[f]), "sha256": hashlib.sha256(files[f]).hexdigest()} for f in files}
     if kind == "android":
-        standard = "raybox-android-1.0.0-0123456789ab-standard.aar"
-        legacy = "raybox-android-1.0.0-0123456789ab-legacy.aar"
-        integrated = "raybox-android-1.0.0-0123456789ab-integrated.zip"
-        return {**common, "tag": "android-" + SHA,
+        standard = "raybox-android-0.0.1-standard.aar"
+        legacy = "raybox-android-0.0.1-legacy.aar"
+        integrated = "raybox-android-0.0.1-integrated.zip"
+        return {**common, "tag": "android-v" + VERSION,
                 "outputs": [{"name": "raybox.aar", "size": len(files[standard]), "sha256": assets[standard]["sha256"]},
                             {"name": "raybox-legacy.aar", "size": len(files[legacy]), "sha256": assets[legacy]["sha256"]}],
                 "versionedOutputs": [{"name": standard, "size": len(files[standard]), "sha256": assets[standard]["sha256"]},
@@ -114,15 +115,15 @@ def manifest(kind, files):
     source = {"url": f"https://github.com/{REPO}/tree/{SHA}", "runtimeLicense": "docs/reference/runtime/LICENSE",
               "protocolLicense": "docs/reference/protocol/LICENSE"}
     if kind == "windows":
-        return {**common, "fullHead": SHA, "tag": "windows-" + SHA, "source": source, "assets": assets}
-    return {**common, "schemaVersion": 1, "tag": "server-" + SHA, "rxDefault": False, "oobDefault": False,
+        return {**common, "fullHead": SHA, "tag": "windows-v" + VERSION, "source": source, "assets": assets}
+    return {**common, "schemaVersion": 1, "tag": "server-v" + VERSION, "rxDefault": False, "oobDefault": False,
             "source": {**source, "entry": "cmd/raybox-server"},
             "assets": {k: v for k, v in assets.items() if k.startswith("raybox-linux")}}
 
 
 CASES = {
     "android": ("android-core.yml", "Verify source manifest and publish immutable release", "artifacts/libbox", "build.json",
-                ["raybox-android-1.0.0-0123456789ab-standard.aar", "raybox-android-1.0.0-0123456789ab-legacy.aar", "raybox-android-1.0.0-0123456789ab-integrated.zip", "SHA256SUMS", "LICENSE", "RayBox-Protocol-LICENSE", "SOURCE.txt"]),
+                ["raybox-android-0.0.1-standard.aar", "raybox-android-0.0.1-legacy.aar", "raybox-android-0.0.1-integrated.zip", "SHA256SUMS", "LICENSE", "RayBox-Protocol-LICENSE", "SOURCE.txt"]),
     "windows": ("windows-core.yml", "Verify source manifest and publish immutable release", "artifacts/windows", "manifest.json",
                 ["raybox-windows-amd64.exe", "LICENSE", "RayBox-Protocol-LICENSE", "SOURCE.txt"]),
     "server": ("server-core.yml", "Create or resume immutable release", "artifacts", "manifest.json",
@@ -147,6 +148,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         (bin_dir / "python3").write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$@"\n')
         (bin_dir / "python3").chmod(0o755)
         work = temp / "work"; (work / directory).mkdir(parents=True)
+        (work / "VERSION").write_text(VERSION + "\n")
         files = {n: (kind + n).encode() for n in names}
         for n, data in files.items(): (work / directory / n).write_bytes(data)
         (work / directory / manifest_name).write_text(json.dumps(manifest(kind, files)))
@@ -179,10 +181,17 @@ class ReleaseWorkflowTest(unittest.TestCase):
                 result, state, files = self.run_case(kind)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assert_published(state, files)
+                create = next(c for c in state["calls"] if c[:2] == ["release", "create"])
+                self.assertEqual(create[2], f"{kind}-v{VERSION}")
+                self.assertEqual(create[create.index("--title") + 1], f"RayBox {kind.capitalize()} v{VERSION}")
                 published = state["releases"]
             with self.subTest(kind=kind, case="same-sha rerun"):
                 result, state, _ = self.run_case(kind, published, SHA)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse([c for c in state["calls"] if c[:2] in (["release", "upload"], ["release", "create"])])
+            with self.subTest(kind=kind, case="version already belongs to other commit"):
+                result, state, _ = self.run_case(kind, published, "f" * 40)
+                self.assertNotEqual(result.returncode, 0)
                 self.assertFalse([c for c in state["calls"] if c[:2] in (["release", "upload"], ["release", "create"])])
             with self.subTest(kind=kind, case="partial draft"):
                 # Earlier run uploaded the manifest and first binary, then stopped.
@@ -195,7 +204,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
                 self.assertEqual(sorted(uploads), sorted(set(files) - keep))
                 self.assert_published(state, files)
             with self.subTest(kind=kind, case="stale draft asset"):
-                draft = {"id": 9, "tag_name": f"{kind}-{SHA}", "draft": True, "target_commitish": SHA,
+                draft = {"id": 9, "tag_name": f"{kind}-v{VERSION}", "draft": True, "target_commitish": SHA,
                          "assets": {CASES[kind][4][0]: b"stale".hex()}}
                 result, state, _ = self.run_case(kind, [draft])
                 self.assertNotEqual(result.returncode, 0)
@@ -208,7 +217,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
                 self.assertIn("HTTP 500", result.stdout + result.stderr)
                 self.assertFalse(state["releases"])
             with self.subTest(kind=kind, case="draft for other commit"):
-                draft = {"id": 9, "tag_name": f"{kind}-{SHA}", "draft": True, "target_commitish": "f" * 40, "assets": {}}
+                draft = {"id": 9, "tag_name": f"{kind}-v{VERSION}", "draft": True, "target_commitish": "f" * 40, "assets": {}}
                 result, state, _ = self.run_case(kind, [draft])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("targets " + "f" * 40, result.stdout + result.stderr)

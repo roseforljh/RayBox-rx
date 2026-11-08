@@ -19,7 +19,7 @@ func TestReadTagUsesOnlyRayBoxVersion(t *testing.T) {
 	}
 	git("init", "--quiet")
 	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture")
-	git("tag", "v1.14.3")
+	git("tag", "v0.0.1")
 	git("tag", "android-"+git("rev-parse", "HEAD"))
 	if _, err := ReadTag(); err == nil {
 		t.Fatal("upstream tags must not replace the RayBox VERSION file")
@@ -32,17 +32,17 @@ func TestReadTagUsesOnlyRayBoxVersion(t *testing.T) {
 			t.Fatalf("invalid VERSION accepted: %q", value)
 		}
 	}
-	if err := os.WriteFile("VERSION", []byte("1.0.0\n"), 0o600); err != nil {
+	if err := os.WriteFile("VERSION", []byte("0.0.1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want := "1.0.0-" + git("rev-parse", "--short=12", "HEAD")
-	for _, tag := range []string{"v1.0.0", "server-" + git("rev-parse", "HEAD")} {
+	want := "0.0.1"
+	for _, tag := range []string{"server-" + git("rev-parse", "HEAD")} {
 		git("tag", tag)
 		if actual, err := ReadTag(); err != nil || actual != want {
 			t.Fatalf("product version: %q %v, want %q", actual, err, want)
 		}
 	}
-	if version, err := ReadTagVersion(); err != nil || version.String() != "1.0.0" {
+	if version, err := ReadTagVersion(); err != nil || version.String() != "0.0.1" {
 		t.Fatalf("numeric product version: %v %v", version, err)
 	}
 }

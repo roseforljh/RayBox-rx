@@ -30,7 +30,7 @@ def build(allow_dirty):
     if not go_version.startswith("go version go1.27.3 "):
         raise ValueError("Go 1.27.3 is required")
     version = subprocess.check_output([go, "run", "./cmd/internal/read_tag"], cwd=ROOT, env=env, text=True).strip()
-    if version != (ROOT / "VERSION").read_text().strip() + "-" + source["commit"][:12]:
+    if version != (ROOT / "VERSION").read_text().strip():
         raise ValueError("Unexpected RayBox version: " + version)
     artifacts = ROOT / "artifacts"
     output = artifacts / ("server-candidate" if source["dirty"] else "server")
@@ -60,7 +60,7 @@ def build(allow_dirty):
             "RayBox server core\nCommit: " + source["commit"] + "\nSource digest: " + source["sourceDigest"] +
             "\n\n" + (ROOT / "SOURCE.md").read_text(encoding="utf-8"), encoding="utf-8")
         manifest = {"schemaVersion": 1, "repository": "roseforljh/RayBox-rx", **source,
-                    "tag": None if source["dirty"] else "server-" + source["commit"],
+                    "tag": None if source["dirty"] else "server-v" + version,
                     "product": "RayBox", "version": version, "goVersion": go_version,
                     "architectures": list(TARGETS), "rxDefault": False, "oobDefault": False,
                     "source": {"entry": "cmd/raybox-server", "runtimeLicense": "docs/reference/runtime/LICENSE",

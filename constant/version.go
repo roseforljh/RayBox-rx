@@ -1,7 +1,7 @@
 package constant
 
 // Version is the RayBox product version, supplied by the release build.
-var Version = "1.0.0-dev"
+var Version = "0.0.1-dev"
 
 // ConfigCompatibility tracks inherited configuration migration rules, not the
 // RayBox product version. Changing branding must not change their behaviour.

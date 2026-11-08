@@ -93,7 +93,7 @@ try {
 } finally {
     Pop-Location
 }
-if ($LASTEXITCODE -ne 0 -or $commitVersion -ne "$((Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim())-$($head.Substring(0, 12))") {
+if ($LASTEXITCODE -ne 0 -or $commitVersion -ne (Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim()) {
     throw "Invalid RayBox version: $commitVersion"
 }
 $env:GOOS = 'windows'
@@ -141,7 +141,7 @@ $manifest = [ordered]@{
     repository = $repository
     commit = $head
     fullHead = $head
-    tag = $(if ($sourceInfo.dirty) { $null } else { "windows-$head" })
+    tag = $(if ($sourceInfo.dirty) { $null } else { "windows-v$commitVersion" })
     dirty = [bool]$sourceInfo.dirty
     sourceDigest = $sourceDigest
     sourceDigestAlgorithm = $sourceDigestAlgorithm

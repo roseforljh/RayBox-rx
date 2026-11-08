@@ -79,7 +79,7 @@ try {
     $tags = @([regex]::Matches($tagLine, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
     if (-not $tags -or $tags -contains 'with_tailscale') { throw 'Unexpected Android build tags' }
     $version = (& go run ./cmd/internal/read_tag).Trim()
-    if ($LASTEXITCODE -ne 0 -or $version -ne "$((Get-Content -Raw -LiteralPath 'VERSION').Trim())-$($source.commit.Substring(0, 12))") {
+    if ($LASTEXITCODE -ne 0 -or $version -ne (Get-Content -Raw -LiteralPath 'VERSION').Trim()) {
         throw "Invalid RayBox version: $version"
     }
     $staging = Join-Path $root ('artifacts/libbox-build-' + [Guid]::NewGuid().ToString('N'))
@@ -94,7 +94,7 @@ try {
         schemaVersion = 1
         repository = 'roseforljh/RayBox-rx'
         commit = $source.commit
-        tag = $(if ($source.dirty) { $null } else { "android-$($source.commit)" })
+        tag = $(if ($source.dirty) { $null } else { "android-v$version" })
         dirty = $source.dirty
         sourceDigest = $source.sourceDigest
         sourceDigestAlgorithm = $source.sourceDigestAlgorithm

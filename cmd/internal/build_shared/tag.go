@@ -35,11 +35,7 @@ func ReadTag() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	commit, err := shell.Exec("git", "rev-parse", "--short=12", "HEAD").ReadOutput()
-	if err != nil {
-		return "", err
-	}
-	return base + "-" + commit, nil
+	return base, nil
 }
 
 func ReadTagVersion() (badversion.Version, error) {
