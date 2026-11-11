@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/roseforljh/RayBox-rx/internal/protocol/common/buf"
@@ -54,6 +55,30 @@ type rxTCPFaultProxy struct {
 	conns     map[stdnet.Conn]struct{}
 	closed    bool
 	wg        sync.WaitGroup
+}
+
+func TestRXUploadAcceptedBeforeQueueClose(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	synctest.Test(t, func(t *testing.T) {
+		q := NewUploadQueue(0)
+		result := make(chan error, 1)
+		go func() {
+			result <- q.push(context.Background(), Packet{Payload: []byte("final"), Seq: 0})
+		}()
+		synctest.Wait() // Hold the sender until the application consumes its final packet.
+		data := make([]byte, 5)
+		if n, err := q.Read(data); err != nil || n != len(data) || string(data) != "final" {
+			t.Fatalf("final packet: %q, %d, %v", data, n, err)
+		}
+		q.Close()
+		if err := <-result; err != nil {
+			t.Fatalf("consumed upload reported as failed after close: %v", err)
+		}
+		if err := q.push(context.Background(), Packet{Seq: 1}); err == nil {
+			t.Fatal("upload accepted after queue closed")
+		}
+	})
 }
 
 func newRXTCPFaultProxy(t *testing.T, upstream, mode string, threshold int64) *rxTCPFaultProxy {
