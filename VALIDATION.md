@@ -118,6 +118,25 @@
 - 本地真实TCP/TLS/H2/XHTTP的Go/Chrome、普通/OOB四档各50MiB/hash一致，未发现本地固定0.5MB/s上限，不代替公网性能验收。
 - 新增10个目录统一双端清理审计通过；无新增源码性能修复，未改CF/DNS或远端生产。CF事件查询未完成，不宣称已确认CF拦截。
 
+## Xray v26.11.9 选择性修复验证（2026-11-10）
+
+- 新增 6 项回归测试：超时后返回明确错误且保留迟到数据、MUX 客户端/服务端共享写入串行化与关闭/中断转发、带/不带 tag 的动态入站失败清理（含 Close 失败）、MASQUE 默认私网保护及显式允许覆盖、WireGuard 端点解析截止时间、解析成功/失败/取消及字面 IP。Go 1.27.3 普通测试与 5 包定向 `-race` 均通过。
+- `with_utls` 下 5 包定向集成通过：原生/session REALITY 的 X25519MLKEM768 与 X25519 握手、标准 VLESS 验证 TLS/证书重载/上下文、VMess/Trojan XHTTP、RX TLS 并行分段、XMUX TLS 并发档位、gRPC 配置及 User-Agent。
+- 新增 gRPC single/multi 两模式真实 TCP 回环，每种 12 KiB 回显字节一致；最初测试回调类型不匹配编译失败，修正为 `stat.Connection` 后通过。既有 MUX EOF、关闭、UDP 来源及出站泄漏共 4 项回归通过。
+- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0` 的 `cmd/raybox-server` 构建通过；`git diff --check` 通过。仅本地回环与构建，不作为俄罗斯线路、CF 受限入口提速或 Android 实机验收。
+
+### HK 真实节点验收（2026-11-10 工作批次）
+
+- 按用户授权构建并上传独立 Linux amd64 完整内核及协议服务端，版本标记 `0.0.1-hk-candidate`。大小分别为 61,522,080 / 34,943,136 字节，SHA-256 分别为 `70dd74d7fea79b83b700a54a14404d3b515f65c6efd18ab3a71365b919a31a3b` / `ff76de81c783d8f7e55a83182e518c33831d7c757b5267baebecde90f0c3991a`；上传后逐文件核对。测试使用新端口及独立证书，没有覆盖原有节点。批次名沿用本地日期，HK 主机日志日期为 2026-11-11。
+- 最新源码构建 Windows 公网探针（含真实 Cronet Naive 客户端），测试候选节点 27 个正常变体各 2 轮，既有节点 16 个正常变体各 2 轮，共 86 轮。每轮完整 TCP 回显 360,448 字节，累计 30,998,528 字节，逐字节及 SHA-256 一致；每轮通过节点访问 HTTPS，正常验证公网证书并核对出口 IP 为 HK。关闭检查均通过。候选及既有节点另各 1 个错误主机名负对照，均拒绝连接；最终共 45 个用例、88 轮符合预期。
+- 覆盖 VLESS Vision/REALITY（原生及协议服务端）、VLESS Encryption、XHTTP H1/H2/H3、GET Header、packet-down keepalive、WebSocket/early-data、gRPC、TUIC 两种 UDP 模式、AnyTLS/TLS/REALITY、SS2022 三种算法、VMess TCP/WS、Trojan TLS、Hysteria2、Naive、SOCKS。标准 RayBox gRPC 出站只提供单流模式；另用协议内核的 gRPC multi 出站完成 MUX 检查，没有把配置里的服务端 multi 标志当成客户端 multi 已验证。
+- 支持 UDP 的用例核对双目标回显、来源地址及 DNS 回复；Naive 为 TCP-only。VMess 的普通 UDP 为固定目标模式，多目标测试改为显式 XUDP 后通过。SS/SOCKS 跨公网 4,096 字节 UDP 首轮超时/超过本机消息大小限制，1/1,200 字节及 DNS 通过；同一最新源码的 Linux 探针在 HK 本机对四个节点执行 8 轮，含 4,096 字节均通过，公网大包限制保留，不记作已解决。旧节点首轮 3 个用例有 HTTPS 超时/EOF，定向复核各 2 轮通过，初轮失败证据保留。
+- MUX 在 HK 实际 VMess TCP 与 VLESS/gRPC multi 链路各运行 32 条流，每条 1 MiB，分别耗时 1.091 / 0.407 秒，共 64 MiB，SHA-256 全部一致。XHTTP TCP 套 MUX 初测失败，服务端明确报 `unexpected network TCP`，核对为现有 `proxyman/inbound` 对 splithttp/masque 只允许 UDP MUX 的限制；没有修改该限制，也没有把该组合计为通过。
+- 动态入站 API 真实占用端口触发 Start 失败，确认失败 tag 已清除；释放端口后同 tag 注册、SOCKS 握手、移除及端口释放全部通过。REALITY 本地静默目标触发含空 SNI 的 6 个探测连接，10.011 秒全部关闭、6 个缓存状态均完成；初版探针存在 EOF 与缓存 defer 更新竞态，修正探针等待后通过，未改产品代码。
+- HK Linux 上执行新超时读取、WireGuard DNS 截止/成功/失败/取消、MASQUE 私网默认阻断/显式允许共 4 项定向测试通过。它们是内部故障触发验证，不宣称实际建立了 WireGuard/MASQUE 公网节点。此前本地定向 race 结果保留。
+- 收尾停止本批独立服务，候选进程为 0、测试端口全部释放；原 6 个服务 PID/状态、2 份配置 SHA-256 和原监听逐项不变。构建源码清单逐文件保持一致。配置、认证、原始日志及完整结果仅存 Git 忽略的 `artifacts/hk-upstream-20261110/`。此轮验证直连 HK，不替代 CF 受限入口、俄罗斯线路、Android 或长时间稳定性验收。
+
+
 ## 最新内核构建及两端项目接入（2026-10-31 UTC）
 
 用户要求提交当前代码、编译最新内核并放入服务器与客户端项目。此次发布源码基于提交`b765f79e8ade9313c7211c9d10afacf6bfc2b074`；后续记录提交仅修改文档。RX/OOB默认关闭，未修改既有节点配置或远端生产进程。

@@ -10,6 +10,18 @@ RayBox-rx 是单一 Go 模块 `github.com/roseforljh/RayBox-rx`。现有代码�
 | metacubex uTLS | v1.8.7，本地移植 Chrome 155；保留 Meta 扩展接口 | `third_party/utls/` | BSD-3-Clause，见 [`SOURCE.md`](third_party/utls/SOURCE.md) |
 | XTLS uTLS | `v0.0.0-20261106062530-666e20f266ac`，协议层 TCP TLS/REALITY 使用 | 固定 Go 模块依赖 | BSD-3-Clause，保留模块许可证 |
 
+## Xray v26.11.9 选择性跟进（2026-11-10）
+
+基线仍为 v26.10.31，未整体替换内置协议源码。本次移植：读超时返回 `ErrReadTimeout`（#7327）、MUX 公共写入串行化（`5745dea2b44f`）、动态入站启动失败清理（#7223）、MASQUE 默认私网保护（#7329 的安全修复部分）、WireGuard 端点 DNS 等待遵守连接截止时间（#7323）。MUX 包装保留底层 `Close` / `Interrupt`，避免取消被包装层吞掉。
+
+定向依赖：
+
+- `github.com/xtls/reality`：`v0.0.0-20261108101329-4bb46b2afd8b`（空 SNI 探测与探测握手截止时间修复）。
+- `golang.org/x/net`：`v0.62.0`。
+- `google.golang.org/grpc`：`v1.85.0`；其最低依赖同步带入 `genproto/googleapis/rpc`、OpenTelemetry 1.45.0 与 `go-logr/logr` 1.4.4。
+
+保留本地 Chrome 155、VisionWriter 锁、RX/OOB 和 XMUX 默认值；未跟进 XDRIVE、mux.cool 默认并发提高、Windows TUN/WFP 改动及 `finalRules` 配置字段改名。
+
 ## QUIC/Hysteria 依赖锁定
 
 本次 Hysteria 2 适配只升级以下三个直接依赖，未执行全仓 `go get -u`：
