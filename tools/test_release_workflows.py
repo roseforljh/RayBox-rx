@@ -64,49 +64,19 @@ else: fail("unexpected gh " + " ".join(args))
 save()
 '''
 
-FAKE_JQ = r'''
-import json, sys
-sys.stdout.reconfigure(newline=chr(10))
-value = json.load(sys.stdin)
-path = sys.argv[-1]
-if path == ".assets[].name":
-    for item in value["assets"]: print(item["name"])
-    sys.exit()
-for key in path.strip(".").split("."): value = value[key]
-print(str(value).lower() if isinstance(value, bool) else value)
-'''
-
-
-def bash():
-    # On Windows PATH may resolve to WSL's bash, which cannot run these Windows paths.
-    if os.name == "nt":
-        for root in Path(shutil.which("git")).resolve().parents:
-            for candidate in (root / "bin/bash.exe", root / "usr/bin/bash.exe"):
-                if candidate.is_file():
-                    return str(candidate)
-        raise RuntimeError("Git Bash is required on Windows")
-    return shutil.which("bash")
-
-
-def step(workflow, name):
-    data = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())
-    for job in data["jobs"].values():
-        for item in job["steps"]:
-            if item.get("name") == name:
-                return item["run"]
-    raise KeyError(name)
-
-
 def manifest(kind, files):
     common = {"repository": REPO, "commit": SHA, "dirty": False, "sourceDigest": "d",
-              "version": VERSION, "sourceDigestAlgorithm": "sha256-git-path-kind-content-v1"}
+              "version": VERSION, "sourceDigestAlgorithm": "sha256-git-path-kind-content-v1",
+              "rxDefault": False, "oobDefault": False,
+              "source": {"url": f"https://github.com/{REPO}/tree/{SHA}",
+                         "runtimeLicense": "docs/reference/runtime/LICENSE", "protocolLicense": "docs/reference/protocol/LICENSE"}}
     import hashlib
     assets = {f: {"file": f, "size": len(files[f]), "sha256": hashlib.sha256(files[f]).hexdigest()} for f in files}
     if kind == "android":
         standard = "raybox-android-0.0.1-standard.aar"
         legacy = "raybox-android-0.0.1-legacy.aar"
         integrated = "raybox-android-0.0.1-integrated.zip"
-        return {**common, "tag": "android-v" + VERSION,
+        return {**common, "tag": "v" + VERSION,
                 "outputs": [{"name": "raybox.aar", "size": len(files[standard]), "sha256": assets[standard]["sha256"]},
                             {"name": "raybox-legacy.aar", "size": len(files[legacy]), "sha256": assets[legacy]["sha256"]}],
                 "versionedOutputs": [{"name": standard, "size": len(files[standard]), "sha256": assets[standard]["sha256"]},
@@ -115,40 +85,61 @@ def manifest(kind, files):
     source = {"url": f"https://github.com/{REPO}/tree/{SHA}", "runtimeLicense": "docs/reference/runtime/LICENSE",
               "protocolLicense": "docs/reference/protocol/LICENSE"}
     if kind == "windows":
-        return {**common, "fullHead": SHA, "tag": "windows-v" + VERSION, "source": source, "assets": assets}
-    return {**common, "schemaVersion": 1, "tag": "server-v" + VERSION, "rxDefault": False, "oobDefault": False,
+        return {**common, "fullHead": SHA, "tag": "v" + VERSION, "source": source, "assets": assets,
+                "goos": "windows", "goarch": "amd64", "pe": {"machine": "amd64"}, "goVersion": "go version go1.27.3 windows/amd64"}
+    return {**common, "schemaVersion": 1, "tag": "v" + VERSION, "rxDefault": False, "oobDefault": False,
             "source": {**source, "entry": "cmd/raybox-server"},
+            "architectures": ["amd64", "arm64", "armv7"], "goVersion": "go version go1.27.3 linux/amd64",
             "assets": {k: v for k, v in assets.items() if k.startswith("raybox-linux")}}
 
 
 CASES = {
-    "android": ("android-core.yml", "Verify source manifest and publish immutable release", "artifacts/libbox", "build.json",
+    "android": ("artifacts/libbox", "build.json",
                 ["raybox-android-0.0.1-standard.aar", "raybox-android-0.0.1-legacy.aar", "raybox-android-0.0.1-integrated.zip", "SHA256SUMS", "LICENSE", "RayBox-Protocol-LICENSE", "SOURCE.txt"]),
-    "windows": ("windows-core.yml", "Verify source manifest and publish immutable release", "artifacts/windows", "manifest.json",
+    "windows": ("artifacts/windows", "manifest.json",
                 ["raybox-windows-amd64.exe", "LICENSE", "RayBox-Protocol-LICENSE", "SOURCE.txt"]),
-    "server": ("server-core.yml", "Create or resume immutable release", "artifacts", "manifest.json",
+    "server": ("artifacts/server", "manifest.json",
                ["raybox-linux-amd64", "raybox-linux-arm64", "raybox-linux-armv7", "SOURCE.txt", "LICENSE", "RayBox-Protocol-LICENSE"]),
 }
 
 
 class ReleaseWorkflowTest(unittest.TestCase):
     def test_release_gate_wiring(self):
-        for kind, (workflow, *_) in CASES.items():
+        data = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())
+        triggers = data.get('on', data.get(True))
+        self.assertEqual(triggers['push']['branches'], ['main'])
+        self.assertIs(triggers['workflow_dispatch']['inputs']['publish']['default'], False)
+        gate = data['jobs']['release-gate']
+        self.assertEqual(gate['outputs']['publish'], '${{ steps.gate.outputs.publish }}')
+        self.assertEqual(gate['steps'][0]['with']['fetch-depth'], 0)
+        self.assertEqual(gate['steps'][1], {'id': 'gate', 'run': 'python3 -I tools/check_release_trigger.py'})
+        publish = data['jobs']['publish']
+        self.assertEqual(publish['needs'], ['release-gate', 'android', 'windows', 'server'])
+        self.assertEqual(publish['if'], "${{ needs['release-gate'].outputs.publish == 'true' }}")
+        self.assertFalse(publish['concurrency']['cancel-in-progress'])
+        self.assertEqual(publish['permissions'], {'contents': 'write'})
+        self.assertEqual(publish['steps'][-1]['run'], './tools/publish-release.ps1')
+        downloads = [s['with'] for s in publish['steps'] if s.get('uses') == 'actions/download-artifact@v4']
+        self.assertEqual({d['name']: d['path'] for d in downloads}, {
+            'raybox-android-${{ github.sha }}': 'artifacts/libbox',
+            'raybox-windows-${{ github.sha }}': 'artifacts/windows',
+            'raybox-server-${{ github.sha }}': 'artifacts/server',
+        })
+        for script, snippet in [('build-libbox.ps1', 'else { "v$version" }'),
+                                ('build-windows.ps1', 'else { "v$commitVersion" }'),
+                                ('build_server_candidate.py', 'else "v" + version')]:
+            self.assertIn(snippet, (ROOT / 'tools' / script).read_text(encoding='utf-8'))
+        for kind in CASES:
             with self.subTest(kind=kind):
-                data = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())
-                # PyYAML's YAML 1.1 loader interprets the unquoted key 'on' as True.
-                triggers = data.get("on", data.get(True))
-                self.assertEqual(triggers["push"]["branches"], ["main"])
-                self.assertIs(triggers["workflow_dispatch"]["inputs"]["publish"]["default"], False)
-                gate = data["jobs"]["release-gate"]
-                self.assertEqual(gate["outputs"]["publish"], "${{ steps.gate.outputs.publish }}")
-                self.assertEqual(gate["steps"][0]["with"]["fetch-depth"], 0)
-                self.assertEqual(gate["steps"][1], {"id": "gate", "run": "python3 -I tools/check_release_trigger.py"})
-                publish = data["jobs"]["publish"]
-                build = "build" if kind == "server" else kind + "-core"
-                self.assertEqual(publish["needs"], [build, "release-gate"])
-                self.assertEqual(publish["if"], "${{ needs['release-gate'].outputs.publish == 'true' }}")
-                self.assertNotIn("needs", data["jobs"][build] if kind != "server" else data["jobs"]["validate"])
+                self.assertEqual(data['jobs'][kind]['uses'], f'./.github/workflows/{kind}-core.yml')
+                self.assertNotIn('needs', data['jobs'][kind])
+                child = yaml.safe_load((ROOT / f'.github/workflows/{kind}-core.yml').read_text())
+                self.assertEqual(set(child.get('on', child.get(True))), {'workflow_call', 'workflow_dispatch'})
+                self.assertEqual(child['permissions'], {'contents': 'read'})
+                self.assertNotIn('publish', child['jobs'])
+        server = yaml.safe_load((ROOT / '.github/workflows/server-core.yml').read_text())
+        self.assertEqual(server['jobs']['assemble']['needs'], 'build')
+        self.assertIn('Assemble and verify release assets', str(server['jobs']['assemble']))
 
     def test_release_trigger(self):
         with tempfile.TemporaryDirectory(prefix="raybox-gate-") as directory:
@@ -206,96 +197,113 @@ class ReleaseWorkflowTest(unittest.TestCase):
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(output_path.read_text(), "publish=" + str(expected).lower() + "\n")
 
-    def run_case(self, kind, releases=(), tag_commit=None, api_error=False):
-        workflow, name, directory, manifest_name, names = CASES[kind]
-        temp = Path(tempfile.mkdtemp(prefix="raybox-wf-"))
+    def run_case(self, releases=(), tag_commit=None, api_error=False, missing=None, changed_time=False, corrupt=None):
+        temp = Path(tempfile.mkdtemp(prefix='raybox-wf-'))
         self.addCleanup(shutil.rmtree, temp, True)
-        bin_dir = temp / "bin"; bin_dir.mkdir()
-        (bin_dir / "fake_gh.py").write_text(FAKE_GH)
-        (bin_dir / "fake_jq.py").write_text(FAKE_JQ)
-        for tool in ("gh", "jq"):
-            script = bin_dir / tool
-            script.write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$(dirname "$0")/fake_{tool}.py" "$@"\n')
-            script.chmod(0o755)
-            (bin_dir / (tool + ".cmd")).write_text(f'@"{sys.executable}" "%~dp0fake_{tool}.py" %*\n')
-        # The server step calls python3; Windows may only provide a Store alias.
-        (bin_dir / "python3").write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$@"\n')
-        (bin_dir / "python3").chmod(0o755)
-        work = temp / "work"; (work / directory).mkdir(parents=True)
-        (work / "VERSION").write_text(VERSION + "\n")
-        files = {n: (kind + n).encode() for n in names}
-        for n, data in files.items(): (work / directory / n).write_bytes(data)
-        (work / directory / manifest_name).write_text(json.dumps(manifest(kind, files)))
-        state = {"calls": [], "tag_commit": tag_commit, "api_error": api_error, "releases": list(releases)}
-        state_path = temp / "state.json"; state_path.write_text(json.dumps(state))
-        script = step(workflow, name)
-        env = {**os.environ, "GITHUB_SHA": SHA, "GITHUB_REPOSITORY": REPO, "FAKE_GH_STATE": str(state_path),
-               "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
-        if kind == "server":
-            # Script files avoid native argument re-quoting of the embedded jq filters.
-            path = temp / "step.sh"
-            path.write_bytes(("set -euo pipefail\n" + script).encode())
-            command = [bash(), path.as_posix()]
-        else:
-            path = temp / "step.ps1"
-            path.write_text(script, encoding="utf-8")
-            command = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(path)]
-        result = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        return result, json.loads(state_path.read_text()), files | {manifest_name: (work / directory / manifest_name).read_bytes()}
+        bin_dir = temp / 'bin'; bin_dir.mkdir()
+        (bin_dir / 'fake_gh.py').write_text(FAKE_GH)
+        script = bin_dir / 'gh'
+        script.write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$(dirname "$0")/fake_gh.py" "$@"\n')
+        script.chmod(0o755)
+        (bin_dir / 'gh.cmd').write_text(f'@"{sys.executable}" "%~dp0fake_gh.py" %*\n')
+        work = temp / 'work'; work.mkdir()
+        (work / 'VERSION').write_text(VERSION + '\n')
+        for kind, (directory, manifest_name, names) in CASES.items():
+            root = work / directory
+            root.mkdir(parents=True)
+            files = {n: (kind + n).encode() for n in names}
+            for name, content in files.items(): (root / name).write_bytes(content)
+            metadata = manifest(kind, files)
+            if changed_time and kind == 'android': metadata['builtAt'] = 'another build time'
+            if corrupt == kind: metadata['commit'] = 'f' * 40
+            (root / manifest_name).write_text(json.dumps(metadata))
+            if missing == kind: (root / manifest_name).unlink()
+            if missing == kind + '-binary': (root / names[0]).unlink()
+        state = {'calls': [], 'tag_commit': tag_commit, 'api_error': api_error, 'releases': list(releases)}
+        state_path = temp / 'state.json'; state_path.write_text(json.dumps(state))
+        env = {**os.environ, 'GITHUB_SHA': SHA, 'GITHUB_REPOSITORY': REPO, 'FAKE_GH_STATE': str(state_path),
+               'PATH': str(bin_dir) + os.pathsep + os.environ['PATH']}
+        result = subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'tools/publish-release.ps1')],
+                                cwd=work, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        staging = work / 'artifacts/release'
+        files = {p.name: p.read_bytes() for p in staging.glob('*') if p.is_file()}
+        return result, json.loads(state_path.read_text()), files
 
     def assert_published(self, state, files):
-        (release,) = state["releases"]
-        self.assertFalse(release["draft"])
-        self.assertEqual(state["tag_commit"], SHA)
-        self.assertEqual({k: bytes.fromhex(v) for k, v in release["assets"].items()}, files)
+        import hashlib
+        (release,) = state['releases']
+        self.assertFalse(release['draft'])
+        self.assertEqual(release['tag_name'], f'v{VERSION}')
+        self.assertEqual(state['tag_commit'], SHA)
+        actual = {k: bytes.fromhex(v) for k, v in release['assets'].items()}
+        self.assertEqual(actual, files)
+        combined = json.loads(actual['manifest.json'].decode('utf-8-sig'))
+        self.assertEqual(set(combined['assets']), set(actual) - {'manifest.json'})
+        for name, entry in combined['assets'].items():
+            self.assertEqual(entry['size'], len(actual[name]))
+            self.assertEqual(entry['sha256'], hashlib.sha256(actual[name]).hexdigest())
+        for name in ('android-build.json', 'windows-manifest.json', 'server-manifest.json'):
+            self.assertIn(name, actual)
 
     def test_workflows(self):
+        result, state, files = self.run_case()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_published(state, files)
+        creates = [c for c in state['calls'] if c[:2] == ['release', 'create']]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(creates[0][creates[0].index('--title') + 1], f'RayBox v{VERSION}')
+        published = state['releases']
+        for changed_time in (False, True):
+            with self.subTest(case='same-SHA rerun', changed_time=changed_time):
+                result, state, files = self.run_case(published, SHA, changed_time=changed_time)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assert_published(state, files)
+                self.assertFalse([c for c in state['calls'] if c[:2] in (['release', 'upload'], ['release', 'create'], ['release', 'edit'])])
+        with self.subTest(case='version belongs to another commit'):
+            result, state, _ = self.run_case(published, 'f' * 40)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse([c for c in state['calls'] if c[:2] == ['release', 'create']])
+        fresh = published[0]
+        for keep in ({'manifest.json', 'android-build.json', 'raybox-linux-amd64'}, {'android-build.json', 'raybox-linux-amd64'}):
+            with self.subTest(case='partial draft', keep=keep):
+                draft = {**fresh, 'draft': True, 'assets': {k: v for k, v in fresh['assets'].items() if k in keep}}
+                result, state, files = self.run_case([draft], changed_time=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assert_published(state, files)
+                uploads = [Path(c[3]).name for c in state['calls'] if c[:2] == ['release', 'upload']]
+                self.assertEqual(set(uploads), set(files) - keep)
+        for case, assets in [('stale draft asset', {'raybox-linux-amd64': b'stale'.hex()}),
+                             ('published missing asset', {k: v for k, v in fresh['assets'].items() if k != 'windows-manifest.json'})]:
+            with self.subTest(case=case):
+                draft = case.startswith('stale')
+                release = {**fresh, 'draft': draft, 'assets': assets}
+                result, state, _ = self.run_case([release], None if draft else SHA)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse([c for c in state['calls'] if c[:2] in (['release', 'upload'], ['release', 'edit'])])
+        with self.subTest(case='api error'):
+            result, state, _ = self.run_case(api_error=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('HTTP 500', result.stdout + result.stderr)
+            self.assertFalse(state['releases'])
+        with self.subTest(case='draft for other commit'):
+            draft = {**fresh, 'draft': True, 'target_commitish': 'f' * 40, 'assets': {}}
+            result, state, _ = self.run_case([draft])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(state['releases'][0]['draft'])
         for kind in CASES:
-            with self.subTest(kind=kind, case="fresh"):
-                result, state, files = self.run_case(kind)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assert_published(state, files)
-                create = next(c for c in state["calls"] if c[:2] == ["release", "create"])
-                self.assertEqual(create[2], f"{kind}-v{VERSION}")
-                self.assertEqual(create[create.index("--title") + 1], f"RayBox {kind.capitalize()} v{VERSION}")
-                published = state["releases"]
-            with self.subTest(kind=kind, case="same-sha rerun"):
-                result, state, _ = self.run_case(kind, published, SHA)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertFalse([c for c in state["calls"] if c[:2] in (["release", "upload"], ["release", "create"])])
-            with self.subTest(kind=kind, case="version already belongs to other commit"):
-                result, state, _ = self.run_case(kind, published, "f" * 40)
+            for missing in (kind, kind + '-binary'):
+                with self.subTest(case='platform missing', missing=missing):
+                    result, state, _ = self.run_case(missing=missing)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(state['releases'])
+            with self.subTest(case='platform identity mismatch', kind=kind):
+                result, state, _ = self.run_case(corrupt=kind)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertFalse([c for c in state["calls"] if c[:2] in (["release", "upload"], ["release", "create"])])
-            with self.subTest(kind=kind, case="partial draft"):
-                # Earlier run uploaded the manifest and first binary, then stopped.
-                (fresh,) = published
-                keep = {CASES[kind][3], CASES[kind][4][0]}
-                draft = {**fresh, "draft": True, "assets": {k: v for k, v in fresh["assets"].items() if k in keep}}
-                result, state, files = self.run_case(kind, [draft])
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                uploads = [Path(c[3]).name for c in state["calls"] if c[:2] == ["release", "upload"]]
-                self.assertEqual(sorted(uploads), sorted(set(files) - keep))
-                self.assert_published(state, files)
-            with self.subTest(kind=kind, case="stale draft asset"):
-                draft = {"id": 9, "tag_name": f"{kind}-v{VERSION}", "draft": True, "target_commitish": SHA,
-                         "assets": {CASES[kind][4][0]: b"stale".hex()}}
-                result, state, _ = self.run_case(kind, [draft])
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Existing asset differs", result.stdout + result.stderr)
-                self.assertFalse([c for c in state["calls"] if c[:2] == ["release", "upload"]])
-                self.assertTrue(state["releases"][0]["draft"])
-            with self.subTest(kind=kind, case="api error"):
-                result, state, _ = self.run_case(kind, api_error=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("HTTP 500", result.stdout + result.stderr)
-                self.assertFalse(state["releases"])
-            with self.subTest(kind=kind, case="draft for other commit"):
-                draft = {"id": 9, "tag_name": f"{kind}-v{VERSION}", "draft": True, "target_commitish": "f" * 40, "assets": {}}
-                result, state, _ = self.run_case(kind, [draft])
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("targets " + "f" * 40, result.stdout + result.stderr)
-                self.assertTrue(state["releases"][0]["draft"])
+                self.assertFalse(state['releases'])
+        with self.subTest(case='duplicate releases'):
+            result, state, _ = self.run_case([fresh, {**fresh, 'id': 9}], SHA)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse([c for c in state['calls'] if c[:2] in (['release', 'create'], ['release', 'upload'], ['release', 'edit'])])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,70 @@
+name: Build and release RayBox
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish all platforms in one immutable RayBox release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    name: Check release trigger
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: gate
+        run: python3 -I tools/check_release_trigger.py
+
+  android:
+    uses: ./.github/workflows/android-core.yml
+
+  windows:
+    uses: ./.github/workflows/windows-core.yml
+
+  server:
+    uses: ./.github/workflows/server-core.yml
+
+  publish:
+    name: Publish all platforms in one release
+    if: ${{ needs['release-gate'].outputs.publish == 'true' }}
+    needs: [release-gate, android, windows, server]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: raybox-release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: raybox-android-${{ github.sha }}
+          path: artifacts/libbox
+      - uses: actions/download-artifact@v4
+        with:
+          name: raybox-windows-${{ github.sha }}
+          path: artifacts/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: raybox-server-${{ github.sha }}
+          path: artifacts/server
+      - name: Verify and publish unified release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: ./tools/publish-release.ps1

@@ -60,7 +60,7 @@ def build(allow_dirty):
             "RayBox server core\nCommit: " + source["commit"] + "\nSource digest: " + source["sourceDigest"] +
             "\n\n" + (ROOT / "SOURCE.md").read_text(encoding="utf-8"), encoding="utf-8")
         manifest = {"schemaVersion": 1, "repository": "roseforljh/RayBox-rx", **source,
-                    "tag": None if source["dirty"] else "server-v" + version,
+                    "tag": None if source["dirty"] else "v" + version,
                     "product": "RayBox", "version": version, "goVersion": go_version,
                     "architectures": list(TARGETS), "rxDefault": False, "oobDefault": False,
                     "source": {"entry": "cmd/raybox-server", "runtimeLicense": "docs/reference/runtime/LICENSE",

@@ -94,7 +94,7 @@ try {
         schemaVersion = 1
         repository = 'roseforljh/RayBox-rx'
         commit = $source.commit
-        tag = $(if ($source.dirty) { $null } else { "android-v$version" })
+        tag = $(if ($source.dirty) { $null } else { "v$version" })
         dirty = $source.dirty
         sourceDigest = $source.sourceDigest
         sourceDigestAlgorithm = $source.sourceDigestAlgorithm
