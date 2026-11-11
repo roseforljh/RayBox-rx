@@ -1,6 +1,8 @@
 package mux
 
 import (
+	"sync"
+
 	"github.com/roseforljh/RayBox-rx/internal/protocol/common"
 	"github.com/roseforljh/RayBox-rx/internal/protocol/common/buf"
 	"github.com/roseforljh/RayBox-rx/internal/protocol/common/net"
@@ -8,6 +10,21 @@ import (
 	"github.com/roseforljh/RayBox-rx/internal/protocol/common/serial"
 	"github.com/roseforljh/RayBox-rx/internal/protocol/common/session"
 )
+
+// MutexWriter keeps each complete mux frame atomic across sessions.
+type MutexWriter struct {
+	sync.Mutex
+	buf.Writer
+}
+
+func (w *MutexWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	w.Lock()
+	defer w.Unlock()
+	return w.Writer.WriteMultiBuffer(mb)
+}
+
+func (w *MutexWriter) Close() error { return common.Close(w.Writer) }
+func (w *MutexWriter) Interrupt()   { common.Interrupt(w.Writer) }
 
 type Writer struct {
 	dest         net.Destination
