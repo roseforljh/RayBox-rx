@@ -2,8 +2,8 @@
 
 ## 触发与权限
 
-- push `main`：构建、验证、保存 CI artifact，并进入发布 job（用户 2026-11 前确定的“推送 main 自动编译并发布”）。
-- `workflow_dispatch` 的 `publish` 默认 `false`，只构建；显式 `true` 才发布。
+- push `main`：始终构建、验证、保存 CI artifact；只有该次 push 前后 `VERSION` 内容变化才进入发布 job。比较整个 push 的起止提交，版本改后改回不发布；首次引入 `VERSION` 视为版本变化。
+- `workflow_dispatch` 的 `publish` 默认 `false`，只构建；显式 `true` 才发布。三端共用 `tools/check_release_trigger.py` 判断门禁；缺少必要历史或目标版本文件时失败，不猜测发布。
 - 发布 job 才有 `contents: write`。本文档不授权触发工作流、发布、提交或推送。
 
 ## 来源身份

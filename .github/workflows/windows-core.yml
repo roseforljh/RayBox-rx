@@ -24,6 +24,19 @@ env:
   GOWORK: off
 
 jobs:
+  release-gate:
+    name: Check release trigger
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: gate
+        run: python3 -I tools/check_release_trigger.py
+
   windows-core:
     name: Compile RayBox Windows core
     runs-on: windows-2025
@@ -74,8 +87,8 @@ jobs:
 
   publish:
     name: Publish immutable Windows release
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true) }}
-    needs: windows-core
+    if: ${{ needs['release-gate'].outputs.publish == 'true' }}
+    needs: [windows-core, release-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
