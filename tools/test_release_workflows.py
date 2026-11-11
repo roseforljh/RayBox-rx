@@ -132,6 +132,80 @@ CASES = {
 
 
 class ReleaseWorkflowTest(unittest.TestCase):
+    def test_release_gate_wiring(self):
+        for kind, (workflow, *_) in CASES.items():
+            with self.subTest(kind=kind):
+                data = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())
+                # PyYAML's YAML 1.1 loader interprets the unquoted key 'on' as True.
+                triggers = data.get("on", data.get(True))
+                self.assertEqual(triggers["push"]["branches"], ["main"])
+                self.assertIs(triggers["workflow_dispatch"]["inputs"]["publish"]["default"], False)
+                gate = data["jobs"]["release-gate"]
+                self.assertEqual(gate["outputs"]["publish"], "${{ steps.gate.outputs.publish }}")
+                self.assertEqual(gate["steps"][0]["with"]["fetch-depth"], 0)
+                self.assertEqual(gate["steps"][1], {"id": "gate", "run": "python3 -I tools/check_release_trigger.py"})
+                publish = data["jobs"]["publish"]
+                build = "build" if kind == "server" else kind + "-core"
+                self.assertEqual(publish["needs"], [build, "release-gate"])
+                self.assertEqual(publish["if"], "${{ needs['release-gate'].outputs.publish == 'true' }}")
+                self.assertNotIn("needs", data["jobs"][build] if kind != "server" else data["jobs"]["validate"])
+
+    def test_release_trigger(self):
+        with tempfile.TemporaryDirectory(prefix="raybox-gate-") as directory:
+            work = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=work, encoding="utf-8").strip()
+            git("init", "-q")
+            git("config", "user.name", "Release test")
+            git("config", "user.email", "release-test@example.invalid")
+            def commit(version):
+                if version is not None:
+                    (work / "VERSION").write_text(version, encoding="utf-8")
+                    git("add", "VERSION")
+                git("commit", "--allow-empty", "-qm", "release gate fixture")
+                return git("rev-parse", "HEAD")
+            absent = commit(None)
+            first = commit("0.0.1\n")
+            unchanged = commit("0.0.1\n")
+            changed = commit("0.0.2\n")
+            multi = commit("0.0.3\n")
+            reverted = commit("0.0.1\n")
+            newline = commit("0.0.1\r\n")
+            cases = [
+                ("same version", "push", {"before": first}, unchanged, False),
+                ("version changed", "push", {"before": unchanged}, changed, True),
+                ("multiple commits", "push", {"before": first}, multi, True),
+                ("changed then reverted", "push", {"before": first}, reverted, False),
+                ("line ending only", "push", {"before": first}, newline, False),
+                ("initial push", "push", {"before": "0" * 40}, first, True),
+                ("VERSION introduced", "push", {"before": absent}, first, True),
+                ("missing before", "push", {}, first, None),
+                ("history unavailable", "push", {"before": "f" * 40}, first, None),
+                ("target VERSION missing", "push", {"before": first}, absent, None),
+                ("manual default", "workflow_dispatch", {}, first, False),
+                ("manual boolean false", "workflow_dispatch", {"inputs": {"publish": False}}, first, False),
+                ("manual string false", "workflow_dispatch", {"inputs": {"publish": "false"}}, first, False),
+                ("manual boolean true", "workflow_dispatch", {"inputs": {"publish": True}}, first, True),
+                ("manual string true", "workflow_dispatch", {"inputs": {"publish": "true"}}, first, True),
+                ("unrelated event", "pull_request", {}, first, False),
+            ]
+            for name, event_name, event, sha, expected in cases:
+                with self.subTest(case=name):
+                    event_path = work / "event.json"
+                    output_path = work / "output.txt"
+                    event_path.write_text(json.dumps(event), encoding="utf-8")
+                    output_path.write_text("", encoding="utf-8")
+                    env = {**os.environ, "GITHUB_EVENT_PATH": str(event_path), "GITHUB_EVENT_NAME": event_name,
+                           "GITHUB_SHA": sha, "GITHUB_OUTPUT": str(output_path)}
+                    result = subprocess.run([sys.executable, "-I", str(ROOT / "tools/check_release_trigger.py")],
+                                            cwd=work, env=env, capture_output=True, text=True, encoding="utf-8")
+                    if expected is None:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(output_path.read_text(), "")
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(output_path.read_text(), "publish=" + str(expected).lower() + "\n")
+
     def run_case(self, kind, releases=(), tag_commit=None, api_error=False):
         workflow, name, directory, manifest_name, names = CASES[kind]
         temp = Path(tempfile.mkdtemp(prefix="raybox-wf-"))

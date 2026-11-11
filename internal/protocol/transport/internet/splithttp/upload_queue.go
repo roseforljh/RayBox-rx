@@ -54,9 +54,8 @@ func (h *uploadQueue) push(ctx context.Context, p Packet) error {
 	}
 	select {
 	case h.pushedPackets <- p:
-		if h.closed.Done() {
-			return errors.New("packet queue closed")
-		}
+		// Enqueue commits acceptance; the reader may consume the final packet
+		// and close before this sender resumes. Do not turn it into a failed upload.
 		return nil
 	case <-h.closed.Wait():
 		return errors.New("packet queue closed")

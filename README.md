@@ -16,7 +16,7 @@ RayBox 内核：单一 Go 模块 `github.com/roseforljh/RayBox-rx`，产品版�
 
 ## 版本
 
-`go run ./cmd/internal/read_tag` 输出 `<VERSION>-<12位提交号>`，构建通过 `-X github.com/roseforljh/RayBox-rx/constant.Version=...` 注入。CLI `version`、SDK `Raybox.version()`、server `version` 和各 manifest 只报告这一个 RayBox 版本。改版本只改 `VERSION`。
+`go run ./cmd/internal/read_tag` 输出 `VERSION` 中的语义版本（`X.Y.Z`，不追加提交号），构建通过 `-X github.com/roseforljh/RayBox-rx/constant.Version=...` 注入。CLI `version`、SDK `Raybox.version()`、server `version` 和各 manifest 只报告这一个 RayBox 版本。改版本只改 `VERSION`。
 
 ## 构建
 
@@ -42,7 +42,7 @@ protobuf：`make proto_check`（对 `internal/protocol`、`daemon`、`experiment
 
 ## 发布工作流
 
-`.github/workflows/{android,windows,server}-core.yml` 在 push `main` 时构建并发布 `android-<SHA>`、`windows-<SHA>`、`server-<SHA>` 不可变 Release；手动运行默认只构建，`publish=true` 才发布。规则见 [`WORKFLOWS.md`](docs/raybox-unification/WORKFLOWS.md)，本地回归：`python -I tools/test_release_workflows.py`（需 PyYAML、pwsh、bash）。
+`.github/workflows/{android,windows,server}-core.yml` 在 push `main` 时始终编译并保存 CI artifact，仅该次 push 前后 `VERSION` 内容变化时自动发布 `android-v<VERSION>`、`windows-v<VERSION>`、`server-v<VERSION>` 不可变 Release；手动运行默认只构建，`publish=true` 才发布。规则见 [`WORKFLOWS.md`](docs/raybox-unification/WORKFLOWS.md)，本地回归：`python -I tools/test_release_workflows.py`（需 PyYAML、pwsh、bash）。
 
 消费端须锁定具体 tag，校验 manifest、size、SHA-256 和架构，失败即终止，不回退到未验证内核。
 
