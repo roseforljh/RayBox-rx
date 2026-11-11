@@ -186,5 +186,5 @@ foreach ($file in @($mapping.Keys) + @('manifest.json')) {
     gh release upload $tag (Join-Path $staging $file)
     if ($LASTEXITCODE -ne 0) { throw "Cannot upload $file" }
 }
-gh release edit $tag --target $sha --draft=false --latest=false
+gh release edit $tag --target $sha --draft=false --latest
 if ($LASTEXITCODE -ne 0) { throw 'Cannot publish release' }

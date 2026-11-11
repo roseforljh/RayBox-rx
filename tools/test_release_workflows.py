@@ -252,6 +252,9 @@ class ReleaseWorkflowTest(unittest.TestCase):
         creates = [c for c in state['calls'] if c[:2] == ['release', 'create']]
         self.assertEqual(len(creates), 1)
         self.assertEqual(creates[0][creates[0].index('--title') + 1], f'RayBox v{VERSION}')
+        (edit,) = [c for c in state['calls'] if c[:2] == ['release', 'edit']]
+        self.assertIn('--latest', edit)
+        self.assertNotIn('--latest=false', edit)
         published = state['releases']
         for changed_time in (False, True):
             with self.subTest(case='same-SHA rerun', changed_time=changed_time):
