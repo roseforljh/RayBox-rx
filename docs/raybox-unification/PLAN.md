@@ -49,7 +49,7 @@ KunBox、SimpleNet、KunBoxForWindows 当前分别存在 sing-box、外置 Xray 
 
 ### Phase 2：统一产物、manifest 与发布门禁
 
-以下保留历史设计；当前版本号、标签及自动发布条件以 [`WORKFLOWS.md`](WORKFLOWS.md) 为准：纯语义版本、平台版本标签、main push 仅在 VERSION 变化时自动发布。
+以下保留历史设计；当前版本号、标签及自动发布条件以 [`WORKFLOWS.md`](WORKFLOWS.md) 为准：纯语义版本、每版本一个统一标签 `v<VERSION>` 和全部平台发布页、main push 仅在 VERSION 变化时自动发布。
 
 - 统一 RayBox Android workflow：Go 1.27.3/JDK 17/NDK 29.0.14206865 或更高，产出 ARM32/ARM64/x86/x86_64 四 ABI AAR；SimpleNet APK 仍仅交付两 ARM。校验实际 ZIP/JNI/ELF、16KiB 对齐、Java API 与 SHA-256，不只检查清单自声明。
 - 解决 RayBox `with_tailscale` 与 KunBox 禁用策略冲突，不以放宽门禁替代迁移；保留 Xray 自身 Encryption，禁止重新引入旧 sing-box 私有 Encryption。

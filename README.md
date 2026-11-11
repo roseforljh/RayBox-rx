@@ -42,7 +42,7 @@ protobuf：`make proto_check`（对 `internal/protocol`、`daemon`、`experiment
 
 ## 发布工作流
 
-`.github/workflows/{android,windows,server}-core.yml` 在 push `main` 时始终编译并保存 CI artifact，仅该次 push 前后 `VERSION` 内容变化时自动发布 `android-v<VERSION>`、`windows-v<VERSION>`、`server-v<VERSION>` 不可变 Release；手动运行默认只构建，`publish=true` 才发布。规则见 [`WORKFLOWS.md`](docs/raybox-unification/WORKFLOWS.md)，本地回归：`python -I tools/test_release_workflows.py`（需 PyYAML、pwsh、bash）。
+`.github/workflows/release.yml` 是统一入口：push `main` 时并行调用三端构建并保存 CI artifact，仅该次 push 前后 `VERSION` 内容变化时自动发布。每个版本只有一个 **RayBox v<VERSION>** Release（标签 `v<VERSION>`），包含 Android、Windows 和 Linux 全部产物；三端全部成功才公开。手动运行默认只构建，`publish=true` 才发布。三个 `*-core.yml` 子流程也可单独手动构建，但不会发布。规则见 [`WORKFLOWS.md`](docs/raybox-unification/WORKFLOWS.md)，本地回归：`python -I tools/test_release_workflows.py`（需 PyYAML、pwsh）。
 
 消费端须锁定具体 tag，校验 manifest、size、SHA-256 和架构，失败即终止，不回退到未验证内核。
 

@@ -40,4 +40,4 @@
 
 ## 发布
 
-push `main` 始终构建，仅本次 push 前后 `VERSION` 内容变化时自动发布；`workflow_dispatch` 的 `publish` 默认false，仅显式true进入拥有contents:write的发布job。详见 `WORKFLOWS.md`。脚本能力不等于本轮发布授权；本轮不执行远程发布。
+统一入口 `release.yml` 在 push `main` 时始终并行构建三端，仅本次 push 前后 `VERSION` 内容变化时自动发布一个 `RayBox v<VERSION>` Release（标签 `v<VERSION>`，包含全部平台）；三端成功后才公开。`workflow_dispatch` 的 `publish` 默认false，仅显式true进入拥有contents:write的发布job。详见 `WORKFLOWS.md`。脚本能力不等于本轮发布授权；本轮不执行远程发布。
