@@ -31,8 +31,9 @@ class StandaloneInstallerTests(unittest.TestCase):
         for protocol in 'vlpt xhpt vxpt vwpt xupt xcpt tupt anpt nvpt arpt sspt hypt vmpt sopt'.split():
             self.assertIn("'" + protocol + "'", source)
         self.assertIn("'with_quic,with_utls,with_reality,with_acme'", source)
-        self.assertIn('1880528af97c4ac3bc44a6c304321995539bccd3', source)
-        self.assertIn('f51231cd158a26efab6b423b33842026d25d2b9cbaa8cdecda1f75865131dc27', source)
+        self.assertIn("'refs/tags/' + tag", source)
+        self.assertIn('FETCH_HEAD^{commit}', source)
+        self.assertIn("constant.Version=' + manifest['version']", source)
         self.assertIn('节点已安装', source)
 
     def test_public_core_and_independent_runtime(self):
@@ -40,9 +41,10 @@ class StandaloneInstallerTests(unittest.TestCase):
         self.assertNotIn('STANDALONE_', script)
         self.assertNotIn('node.5945946.xyz', script)
         self.assertNotIn('dispatch-api.', script)
-        self.assertIn('releases/download/server-v0.0.1/raybox-linux-$arch', script)
-        self.assertIn('399067a9d6b6669681d52777ee7c80be0e425ce8ae1d3c66b78e8bba4b156cd4', script)
-        self.assertEqual(script.count('bash "$work/install.sh" --core-file "$RAYBOX_CORE_FILE"'), 4)
+        self.assertIn('manifest_asset=server-manifest.json', script)
+        self.assertIn('/releases?per_page=100&page=', script)
+        self.assertNotRegex(script, r'/releases/download/(?:server-)?v[0-9]+\.')
+        self.assertEqual(script.count('bash "$work/install.sh" --core-file "$core_asset"'), 4)
         self.assertEqual(script.count("jq -er '.share_link' \"$result\""), 8)
 
 
