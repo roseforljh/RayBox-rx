@@ -1,0 +1,41 @@
+name: Release next version
+
+# Manual one-click release: bump the patch version on main, then start
+# "Build and release RayBox" with publish=true on the bumped commit.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: raybox-release-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump patch version and start release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Bump VERSION, push and dispatch release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(tr -d '[:space:]' < VERSION)"
+          [[ "$current" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "Invalid VERSION: $current"; exit 1; }
+          next="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+          printf '%s\n' "$next" > VERSION
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -qam "release: v$next"
+          git push origin HEAD:main
+          # Pushes made with GITHUB_TOKEN start no workflows, so dispatch the release explicitly.
+          gh workflow run release.yml --ref main -f publish=true
+          echo "v$current -> v$next, release started" >> "$GITHUB_STEP_SUMMARY"
