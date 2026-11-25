@@ -34,6 +34,12 @@ import (
 	goreality "github.com/xtls/reality"
 )
 
+// Origin connections from CDNs are pooled by the peer and may never be closed by it.
+var (
+	serverIdleTimeout     = 2 * time.Minute // close H1/H2 connections without active requests
+	serverSendPingTimeout = time.Minute     // H2 PING after this long without frames; close if unanswered
+)
+
 type requestHandler struct {
 	config         *Config
 	host           string
@@ -473,7 +479,11 @@ func (c *httpServerConn) SetWriteDeadline(deadline time.Time) error {
 }
 
 func (c *httpServerConn) Close() error {
-	c.Lock()
+	if !c.TryLock() {
+		// A Write is stuck on a peer that stopped reading; fail it instead of waiting forever.
+		_ = c.SetWriteDeadline(time.Now())
+		c.Lock()
+	}
 	defer c.Unlock()
 	return c.Instance.Close()
 }
@@ -614,12 +624,14 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 
 		handler.localAddr = l.listener.Addr()
 
-		var http2Config *http.HTTP2Config
+		http2Config := new(http.HTTP2Config)
 		if len(l.config.H2Params) > 0 {
-			http2Config = new(http.HTTP2Config)
 			if err := json.Unmarshal(l.config.H2Params, http2Config); err != nil {
 				return nil, errors.New("failed to parse HTTP2Config").Base(err)
 			}
+		}
+		if http2Config.SendPingTimeout == 0 { // negative disables
+			http2Config.SendPingTimeout = serverSendPingTimeout
 		}
 
 		// server can handle both plaintext HTTP/1.1 and h2c
@@ -629,6 +641,7 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 		l.server = http.Server{
 			Handler:           handler,
 			ReadHeaderTimeout: time.Second * 4,
+			IdleTimeout:       serverIdleTimeout,
 			MaxHeaderBytes:    l.config.GetNormalizedServerMaxHeaderBytes(),
 			Protocols:         protocols,
 			HTTP2:             http2Config,
