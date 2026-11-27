@@ -342,13 +342,20 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		if keepAlivePeriod < 0 {
 			keepAlivePeriod = 0
 		}
-		transport = &http2.Transport{
-			DialTLSContext: func(ctxInner context.Context, network string, addr string, cfg *gotls.Config) (net.Conn, error) {
-				return dialContext(ctxInner)
-			},
-			IdleConnTimeout: net.ConnIdleTimeout,
-			ReadIdleTimeout: keepAlivePeriod,
+		// Yandex Cloud CDN edges can withhold the last 1-60 KB of a download for good once the stream was
+		// blocked by the client's flow-control window (x/net default 4 MiB); later downlink data does not
+		// release it. A 64 MiB stream window keeps normal transfers unblocked.
+		// ponytail: a reader lagging 64 MiB behind can still hit it; per-stream memory is bounded by the window.
+		h2, err := http2.ConfigureTransports(&http.Transport{HTTP2: &http.HTTP2Config{MaxReceiveBufferPerStream: 64 << 20}})
+		if err != nil {
+			panic(err)
 		}
+		h2.DialTLSContext = func(ctxInner context.Context, network string, addr string, cfg *gotls.Config) (net.Conn, error) {
+			return dialContext(ctxInner)
+		}
+		h2.IdleConnTimeout = net.ConnIdleTimeout
+		h2.ReadIdleTimeout = keepAlivePeriod
+		transport = h2
 	} else {
 		httpDialContext := func(ctxInner context.Context, network string, addr string) (net.Conn, error) {
 			return dialContext(ctxInner)
